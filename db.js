@@ -215,10 +215,15 @@ export async function initDb() {
   await registerParquet('lv_parcels.parquet', 'parcely LV', 88, 90);
 
   setStatus('Pripravujem tabuľky...');
+  await queryRun(`PRAGMA threads=4`);
   await queryRun(`CREATE OR REPLACE VIEW unknown_owners AS SELECT * FROM read_parquet('unknown_owners.parquet')`);
   await queryRun(`CREATE OR REPLACE VIEW transferred_rights AS SELECT * FROM read_parquet('transferred_rights.parquet')`);
-  await queryRun(`CREATE OR REPLACE VIEW places_agg AS SELECT * FROM read_parquet('places_agg.parquet')`);
-  await queryRun(`CREATE OR REPLACE VIEW surnames AS SELECT * FROM read_parquet('surnames.parquet')`);
+  await queryRun(`CREATE OR REPLACE TABLE places_agg AS SELECT * FROM read_parquet('places_agg.parquet')`);
+  await queryRun(`CREATE OR REPLACE TABLE surnames AS SELECT * FROM read_parquet('surnames.parquet')`);
+  try {
+    await queryRun(`CREATE INDEX idx_surnames_token ON surnames(token)`);
+    await queryRun(`CREATE INDEX idx_places_ku ON places_agg(ku_norm)`);
+  } catch (_) { /* older wasm may skip */ }
 
   await queryRun(`
     CREATE TABLE lv_details (
@@ -378,7 +383,7 @@ async function overviewSearch(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
   const offset = (page - 1) * limit;
-  const fName = normStr(q.f_name || '');
+  const fName = (q.f_name || '').trim();
   const fKu = normStr(q.f_ku || '');
   const tokens = normStr(raw).split(/\s+/).filter((t) => t.length >= 2);
   const first = tokens[0] || normStr(raw);
@@ -386,65 +391,58 @@ async function overviewSearch(q) {
   const places = await queryObjects(`
     SELECT katastralne_uzemie, poradove_cislo, recs, names, lvs
     FROM places_agg
-    WHERE ${tokens.map((t) => `contains(ku_norm, '${t}')`).join(' AND ') || '1=0'}
+    WHERE ${prefixPred('ku_norm', first)}
+       ${tokens.slice(1).map((t) => `AND contains(ku_norm, '${t}')`).join(' ')}
     ORDER BY recs DESC
     LIMIT 40
   `);
 
+  const surname = (await queryObjects(`
+    SELECT
+      COALESCE(SUM(recs), 0) AS total,
+      COALESCE(SUM(names), 0) AS unique_names,
+      COALESCE(SUM(places), 0) AS unique_places,
+      COALESCE(SUM(lvs), 0) AS unique_lv
+    FROM surnames
+    WHERE ${prefixPred('token', first)}
+  `))[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
+
   const nameConds = [prefixPred('meno_norm', first)];
   tokens.slice(1).forEach((t) => nameConds.push(`contains(meno_norm, '${t}')`));
-  if (fName) nameConds.push(`contains(meno_norm, '${fName}')`);
+  if (fName) nameConds.push(`meno_vlastnika = '${escSql(fName)}'`);
   if (fKu) nameConds.push(`contains(ku_norm, '${fKu}')`);
   const where = `WHERE ${nameConds.join(' AND ')}`;
 
-  const [cntRow, names, rows, lvRows] = await Promise.all([
-    queryObjects(`
-      SELECT
-        COUNT(*) AS total,
-        COUNT(DISTINCT meno_vlastnika) AS unique_names,
-        COUNT(DISTINCT katastralne_uzemie) AS unique_places,
-        COUNT(DISTINCT lv) AS unique_lv
-      FROM unknown_owners ${where}
-    `),
-    queryObjects(`
-      SELECT meno_vlastnika, COUNT(*) AS recs,
-             COUNT(DISTINCT katastralne_uzemie) AS places, COUNT(DISTINCT lv) AS lvs
-      FROM unknown_owners ${where}
-      GROUP BY meno_vlastnika
-      ORDER BY recs DESC, meno_vlastnika
-      LIMIT 40
-    `),
-    queryObjects(`
-      SELECT id, katastralne_uzemie, poradove_cislo, lv, meno_vlastnika
-      FROM unknown_owners ${where}
-      ORDER BY katastralne_uzemie, meno_vlastnika, lv
-      LIMIT ${limit} OFFSET ${offset}
-    `),
-    queryObjects(`
-      SELECT DISTINCT lv, poradove_cislo, katastralne_uzemie
-      FROM unknown_owners ${where}
-      ORDER BY katastralne_uzemie, lv
-      LIMIT 200
-    `),
-  ]);
+  const names = await queryObjects(`
+    SELECT meno_vlastnika, COUNT(*) AS recs,
+           COUNT(DISTINCT katastralne_uzemie) AS places, COUNT(DISTINCT lv) AS lvs
+    FROM unknown_owners ${where}
+    GROUP BY meno_vlastnika
+    ORDER BY recs DESC
+    LIMIT 40
+  `);
 
-  const counts = cntRow[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
+  const rows = await queryObjects(`
+    SELECT id, katastralne_uzemie, poradove_cislo, lv, meno_vlastnika
+    FROM unknown_owners ${where}
+    ORDER BY meno_norm
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+
+  const lvs = rows
+    .filter((r) => r.lv && r.poradove_cislo)
+    .map((r) => ({ lv: r.lv, ku: r.poradove_cislo, kuName: r.katastralne_uzemie }));
+
   const placeRecs = places.reduce((s, p) => s + Number(p.recs || 0), 0);
-  if (placeRecs > Number(counts.total || 0)) {
-    counts.total = placeRecs;
-    counts.unique_places = places.length;
-    counts.unique_names = Math.max(Number(counts.unique_names || 0), places.reduce((s, p) => s + Number(p.names || 0), 0));
-    counts.unique_lv = Math.max(Number(counts.unique_lv || 0), places.reduce((s, p) => s + Number(p.lvs || 0), 0));
-  }
   return {
-    total: counts.total,
-    unique_names: counts.unique_names,
-    unique_places: counts.unique_places || places.length,
-    unique_lv: counts.unique_lv,
+    total: Math.max(Number(surname.total || 0), placeRecs, rows.length),
+    unique_names: Number(surname.unique_names || names.length),
+    unique_places: Math.max(Number(surname.unique_places || 0), places.length),
+    unique_lv: Number(surname.unique_lv || 0),
     names,
     places,
     rows,
-    lvs: lvRows.map((r) => ({ lv: r.lv, ku: r.poradove_cislo, kuName: r.katastralne_uzemie })),
+    lvs,
     page,
     limit,
   };
@@ -477,16 +475,28 @@ async function owners(q) {
   if (fName) conds.push(prefixPred('meno_norm', fName));
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
-  const [cntRow, rows] = await Promise.all([
-    queryObjects(`SELECT COUNT(*) as cnt FROM unknown_owners ${where}`),
-    queryObjects(`
-      SELECT id, katastralne_uzemie, poradove_cislo, lv, meno_vlastnika
-      FROM unknown_owners ${where}
-      ORDER BY ${sortCol} ${sortDir}
-      LIMIT ${limit} OFFSET ${offset}
-    `),
-  ]);
-  return { total: cntRow[0].cnt, page, limit, rows };
+  const countToken = fName || search;
+  let total;
+  if (countToken && !fKu && !fCislo && !fLv) {
+    const est = await queryObjects(`SELECT COALESCE(SUM(recs), 0) AS cnt FROM surnames WHERE ${prefixPred('token', countToken)}`);
+    total = est[0].cnt;
+  } else if (!where) {
+    total = cachedStats?.total_unknown_owners ?? 0;
+  } else {
+    const cntRow = await queryObjects(`SELECT COUNT(*) as cnt FROM unknown_owners ${where}`);
+    total = cntRow[0].cnt;
+  }
+
+  const order = (search || fName) && sortCol === 'meno_vlastnika'
+    ? 'meno_norm'
+    : `${sortCol} ${sortDir}`;
+  const rows = await queryObjects(`
+    SELECT id, katastralne_uzemie, poradove_cislo, lv, meno_vlastnika
+    FROM unknown_owners ${where}
+    ORDER BY ${order}
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+  return { total, page, limit, rows };
 }
 
 async function transferred(q) {
