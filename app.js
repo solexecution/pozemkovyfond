@@ -848,7 +848,58 @@ function renderDossier(data) {
     avg_co: s.avg_co,
     portion: s.portion,
   });
+  const solo = lvs.filter((r) => Number(r.solo));
+  const shared = lvs.filter((r) => !Number(r.solo));
+  const trByLv = {};
+  tr.forEach((row) => {
+    const key = String(row.lv);
+    if (!trByLv[key]) trByLv[key] = [];
+    trByLv[key].push(row);
+  });
   window._overviewLvs = lvs.map((r) => ({ lv: r.lv, ku: r.cislo_ku, kuName: r.ku_name }));
+  window._soloLvs = solo.map((r) => ({ lv: r.lv, ku: r.cislo_ku, kuName: r.ku_name }));
+
+  function lvRowsHtml(list) {
+    if (!list.length) return '<div class="empty-state">Žiadne LV v tejto skupine</div>';
+    return `
+      <table>
+        <thead>
+          <tr>
+            <th>LV</th>
+            <th>k.ú.</th>
+            <th>Kód</th>
+            <th>Záznamy</th>
+            <th>Neznámych</th>
+            <th>Odhad podielu</th>
+            <th>Zápis v registri</th>
+            <th>Prevod</th>
+            <th>Kataster</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${list.map((r) => {
+            const xfers = trByLv[String(r.lv)] || [];
+            const xferTxt = xfers.length
+              ? xfers.map((x) => `${x.year || ''} → ${x.vlastnik_lv || ''}${x.datum_ucinnosti ? ` (${x.datum_ucinnosti})` : ''}`).join('; ')
+              : '—';
+            const safeKu = esc(r.ku_name).replace(/'/g, "\\'");
+            return `
+              <tr>
+                <td><span class="badge badge-amber badge-clickable" onclick="window.openKatasterLV('${safeKu}', '${r.cislo_ku}', '${r.lv}')">📄 LV ${fmt(r.lv)} ↗</span></td>
+                <td>${esc(r.ku_name)}</td>
+                <td>${fmt(r.cislo_ku)}</td>
+                <td>${fmt(r.recs)}</td>
+                <td>${fmt(r.names_on_lv)}</td>
+                <td><strong>${r.portion ?? '—'}</strong></td>
+                <td style="max-width:220px;font-size:0.78rem;color:var(--text-secondary)">${esc(r.variants || '—')}</td>
+                <td style="max-width:200px;font-size:0.78rem">${esc(xferTxt)}</td>
+                <td><a class="btn-lv-link" target="_blank" rel="noopener"
+                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  }
 
   box.innerHTML = `
     <div class="dossier">
@@ -867,26 +918,15 @@ function renderDossier(data) {
         <div>Všetko pre toto meno v tomto k.ú.</div>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap">
           <button class="bulk-lv-btn" onclick="window.shareSearchLink()">↗ Zdieľať</button>
-          ${lvs.length ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť ${lvs.length} výpisov ↗</button>` : ''}
+          ${solo.length ? `<button class="bulk-lv-btn" style="background:linear-gradient(135deg,#10b981,#059669)" onclick="window.openAllLvs(window._soloLvs)">🌲 Otvoriť ${solo.length} solo výpisov ↗</button>` : ''}
+          ${lvs.length ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť všetkých ${lvs.length} ↗</button>` : ''}
         </div>
       </div>
-      <div class="card-title" style="margin:.75rem 0">Listy vlastníctva</div>
-      <div class="table-wrap">
-        ${!lvs.length ? '<div class="empty-state">Žiadne LV</div>' : `
-        <table>
-          <thead><tr><th>LV</th><th>Neznámych na LV</th><th>Solo</th><th>Kataster</th></tr></thead>
-          <tbody>
-            ${lvs.map((r) => `
-              <tr>
-                <td><span class="badge badge-amber badge-clickable" onclick="window.openKatasterLV('${esc(r.ku_name).replace(/'/g, "\\'")}', '${r.cislo_ku}', '${r.lv}')">📄 LV ${fmt(r.lv)} ↗</span></td>
-                <td>${fmt(r.names_on_lv)}</td>
-                <td>${Number(r.solo) ? '<span class="badge badge-green">áno</span>' : '—'}</td>
-                <td><a class="btn-lv-link" target="_blank" rel="noopener"
-                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
-              </tr>`).join('')}
-          </tbody>
-        </table>`}
-      </div>
+      <div class="card-title" style="margin:1rem 0 .4rem">Solo LV — jediný neznámy vlastník</div>
+      <p class="insight-note">Najlepší kandidáti na väčší kus pôdy: na liste nie je iný neznámy z registra. Podiel 1.0 = celý neznámy nárok na tom LV.</p>
+      <div class="table-wrap solo-lv-table">${lvRowsHtml(solo)}</div>
+      <div class="card-title" style="margin:1.25rem 0 .4rem">Ostatné LV — zdieľané s ďalšími neznámymi</div>
+      <div class="table-wrap">${lvRowsHtml(shared)}</div>
       <div class="card-title" style="margin:1rem 0 .5rem">Ďalší neznámi na tých istých LV</div>
       <div class="table-wrap">
         ${!co.length ? '<div class="empty-state">Žiadni ďalší v registri</div>' : `

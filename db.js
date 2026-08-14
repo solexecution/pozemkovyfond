@@ -546,7 +546,7 @@ async function nameKuDetail(q) {
 
   const lvs = await queryObjects(`
     WITH mine AS (
-      SELECT u.lv, u.poradove_cislo, u.katastralne_uzemie,
+      SELECT u.lv, u.poradove_cislo, u.katastralne_uzemie, u.meno_vlastnika,
              COALESCE(c.names_on_lv, 1) AS names_on_lv
       FROM unknown_owners u
       LEFT JOIN lv_co c
@@ -559,7 +559,10 @@ async function nameKuDetail(q) {
       ANY_VALUE(poradove_cislo) AS cislo_ku,
       ANY_VALUE(katastralne_uzemie) AS ku_name,
       ANY_VALUE(names_on_lv) AS names_on_lv,
-      CASE WHEN ANY_VALUE(names_on_lv) <= 1 THEN 1 ELSE 0 END AS solo
+      CASE WHEN ANY_VALUE(names_on_lv) <= 1 THEN 1 ELSE 0 END AS solo,
+      COUNT(*) AS recs,
+      ROUND(1.0 / GREATEST(ANY_VALUE(names_on_lv), 1), 4) AS portion,
+      STRING_AGG(DISTINCT meno_vlastnika, ' · ') AS variants
     FROM mine
     GROUP BY lv
     ORDER BY solo DESC, names_on_lv ASC, lv

@@ -330,6 +330,11 @@ body {
 .ov-search-stats .stat-label { color: var(--text-secondary); }
 .ov-search-stats .stat-value { color: var(--text-primary); font-size: 1.35rem; }
 .ov-search-stats .stat-sub { color: var(--text-muted); }
+.solo-lv-table {
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-md);
+}
+.solo-lv-table table { margin: 0; }
 .ov-click-row { cursor: pointer; }
 .ov-click-row:hover { background: var(--bg-card-hover); }
 .pick-bar {
