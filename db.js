@@ -523,6 +523,85 @@ async function nameDistricts(q) {
   return { name, rows };
 }
 
+async function nameKuDetail(q) {
+  const name = (q.name || '').trim();
+  const ku = (q.ku || '').trim();
+  if (!name || !ku) return { error: 'name and ku required' };
+
+  const lvs = await queryObjects(`
+    WITH mine AS (
+      SELECT u.lv, u.poradove_cislo, u.katastralne_uzemie,
+             COALESCE(c.names_on_lv, 1) AS names_on_lv
+      FROM unknown_owners u
+      LEFT JOIN lv_co c
+        ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
+      WHERE u.meno_vlastnika = '${escSql(name)}'
+        AND u.katastralne_uzemie = '${escSql(ku)}'
+    )
+    SELECT
+      lv,
+      ANY_VALUE(poradove_cislo) AS cislo_ku,
+      ANY_VALUE(katastralne_uzemie) AS ku_name,
+      ANY_VALUE(names_on_lv) AS names_on_lv,
+      CASE WHEN ANY_VALUE(names_on_lv) <= 1 THEN 1 ELSE 0 END AS solo
+    FROM mine
+    GROUP BY lv
+    ORDER BY solo DESC, names_on_lv ASC, lv
+  `);
+
+  const summary = {
+    name,
+    ku,
+    recs: 0,
+    lvs: lvs.length,
+    solo_lvs: lvs.filter((r) => r.solo).length,
+    portion: 0,
+    avg_co: 0,
+    cislo_ku: lvs[0]?.cislo_ku || null,
+  };
+  if (lvs.length) {
+    const portions = lvs.map((r) => 1 / Math.max(Number(r.names_on_lv) || 1, 1));
+    summary.portion = Math.round(portions.reduce((a, b) => a + b, 0) * 100) / 100;
+    summary.avg_co = Math.round((lvs.reduce((a, r) => a + Number(r.names_on_lv || 1), 0) / lvs.length) * 10) / 10;
+    summary.recs = lvs.length;
+  }
+
+  let transferred = [];
+  if (summary.cislo_ku && lvs.length) {
+    const lvList = lvs.map((r) => Number(r.lv)).filter(Boolean).slice(0, 400).join(',');
+    if (lvList) {
+      transferred = await queryObjects(`
+        SELECT year, lv, vlastnik_lv, cislo_ku, nazov_ku, datum_ucinnosti, crz
+        FROM transferred_rights
+        WHERE cislo_ku = ${Number(summary.cislo_ku)}
+          AND lv IN (${lvList})
+        ORDER BY year DESC, lv
+        LIMIT 50
+      `);
+    }
+  }
+
+  let coowners = [];
+  if (summary.cislo_ku && lvs.length) {
+    const lvList = lvs.map((r) => Number(r.lv)).filter(Boolean).slice(0, 400).join(',');
+    if (lvList) {
+      coowners = await queryObjects(`
+        SELECT meno_vlastnika,
+               COUNT(DISTINCT lv) AS shared_lvs
+        FROM unknown_owners
+        WHERE poradove_cislo = ${Number(summary.cislo_ku)}
+          AND lv IN (${lvList})
+          AND meno_vlastnika <> '${escSql(name)}'
+        GROUP BY meno_vlastnika
+        ORDER BY shared_lvs DESC, meno_vlastnika
+        LIMIT 25
+      `);
+    }
+  }
+
+  return { summary, lvs, transferred, coowners };
+}
+
 async function owners(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
@@ -955,6 +1034,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'name-districts':
       result = await nameDistricts(q);
+      break;
+    case 'name-ku-detail':
+      result = await nameKuDetail(q);
       break;
     case 'owners':
       result = await owners(q);

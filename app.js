@@ -260,6 +260,9 @@ const ovSearch = {
   page: 1,
   fName: '',
   fKu: '',
+  pickName: '',
+  pickKu: '',
+  names: [],
 };
 let _ovTimer = null;
 let ovSearchController = null;
@@ -285,13 +288,20 @@ function searchQueryFromUrl() {
   return (p.get('q') || p.get('search') || '').trim();
 }
 
-function writeSearchUrl(q) {
+function writeSearchUrl(q, name, ku) {
   const url = new URL(location.href);
   if (q && q.length >= 2) url.searchParams.set('q', q);
   else url.searchParams.delete('q');
+  const n = name !== undefined ? name : ovSearch.pickName;
+  const k = ku !== undefined ? ku : ovSearch.pickKu;
+  if (n) url.searchParams.set('name', n);
+  else url.searchParams.delete('name');
+  if (k) url.searchParams.set('ku', k);
+  else url.searchParams.delete('ku');
   history.replaceState(null, '', url);
-  document.title = q && q.length >= 2
-    ? `${q} — PZF Explorer`
+  const bits = [n, k, q].filter(Boolean);
+  document.title = bits.length
+    ? `${bits.join(' · ')} — PZF Explorer`
     : 'PZF Data Explorer — Neznámi vlastníci';
 }
 
@@ -381,11 +391,14 @@ function clearOverviewSearch() {
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.fKu = '';
+  ovSearch.pickName = '';
+  ovSearch.pickKu = '';
   writeSearchUrl('');
   setOverviewSearching(false);
   document.body.classList.remove('search-mode');
   const card = document.getElementById('overview-search-card');
   if (card) card.hidden = true;
+  hideDossier();
 }
 
 function filterOverviewName(name) {
@@ -495,9 +508,9 @@ async function loadOverviewSearch(page = 1) {
   writeSearchUrl(q);
   setOverviewSearching(true, 'Hľadám v registri…');
   document.getElementById('overview-search-label').textContent = `„${q}”`;
-  const tableWrap = document.getElementById('overview-search-table');
+  const namesWrap = document.getElementById('overview-names-wrap');
   const countsWrap = document.getElementById('overview-search-counts');
-  tableWrap.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div>Hľadám v registri...</div>';
+  if (namesWrap) namesWrap.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div>Hľadám v registri...</div>';
 
   if (ovSearchController) ovSearchController.abort();
   ovSearchController = new AbortController();
@@ -537,7 +550,8 @@ async function loadOverviewSearch(page = 1) {
         <div class="stat-sub">listy vlastníctva</div>
       </div>`;
 
-    const namesWrap = document.getElementById('overview-names-wrap');
+    ovSearch.names = data.names || [];
+    fillNameSelect(ovSearch.names);
     if (!data.names?.length) {
       namesWrap.innerHTML = '<div class="empty-state">Žiadne mená</div>';
     } else {
@@ -561,7 +575,7 @@ async function loadOverviewSearch(page = 1) {
               const ch = nameChance(r);
               const pct = Number(r.top_ku_pct || 0);
               return `
-              <tr class="ov-click-row" onclick="showNameDistricts('${safe}')" title="Rozpis podľa k.ú.">
+              <tr class="ov-click-row" onclick="onPickName('${safe}')" title="Vybrať toto meno a zvoliť k.ú.">
                 <td><strong>${esc(r.meno_vlastnika)}</strong></td>
                 <td>${fmt(r.recs)}</td>
                 <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
@@ -590,7 +604,7 @@ async function loadOverviewSearch(page = 1) {
             ${data.places.map((r) => {
               const safeKu = esc(r.katastralne_uzemie).replace(/'/g, "\\'");
               return `
-              <tr class="ov-click-row" onclick="filterOverviewPlace('${safeKu}')" title="Filtrovať toto k.ú.">
+              <tr class="ov-click-row" onclick="onPickKuFromList('${safeKu}')" title="Zvoliť toto k.ú.">
                 <td><strong>${esc(r.katastralne_uzemie)}</strong></td>
                 <td>${fmt(r.poradove_cislo)}</td>
                 <td><span class="badge badge-blue">${fmt(r.names)}</span></td>
@@ -602,67 +616,236 @@ async function loadOverviewSearch(page = 1) {
         </table>`;
     }
 
-    window._overviewLvs = data.lvs || [];
-    const bulk = document.getElementById('overview-search-bulk');
-    const lvCount = data.lvs?.length || 0;
-    const more = data.unique_lv > lvCount ? ` z ${fmt(data.unique_lv)}` : '';
-    bulk.innerHTML = `
-      <div class="bulk-lv-bar">
-        <div>⚡ <strong>${fmt(data.total)}</strong> záznamov · <strong>${fmt(data.unique_names)}</strong> mien · <strong>${fmt(data.unique_places)}</strong> obcí · <strong>${lvCount}${more}</strong> LV</div>
-        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-          <button class="bulk-lv-btn" onclick="window.shareSearchLink()">↗ Zdieľať odkaz</button>
-          <button class="bulk-lv-btn" onclick="window.openOverviewInOwners()">👥 Otvoriť v Neznámych vlastníkoch</button>
-          ${lvCount ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť ${lvCount} výpisov ↗</button>` : ''}
-        </div>
-      </div>`;
-
-    if (!data.rows?.length) {
-      tableWrap.innerHTML = '<div class="empty-state">Žiadne výsledky pre zadaný filter</div>';
+    if (ovSearch.pickName) {
+      const sel = document.getElementById('pick-name');
+      if (sel && [...sel.options].some((o) => o.value === ovSearch.pickName)) {
+        sel.value = ovSearch.pickName;
+        await loadKuOptions(ovSearch.pickName, ovSearch.pickKu);
+        if (ovSearch.pickKu) await loadDossier(ovSearch.pickName, ovSearch.pickKu);
+      }
     } else {
-      tableWrap.innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th>Katast. územie</th>
-              <th>Por. číslo</th>
-              <th>LV</th>
-              <th>Meno vlastníka</th>
-              <th>Kataster Výpis</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${data.rows.map((r) => `
-              <tr>
-                <td>${esc(r.katastralne_uzemie)}</td>
-                <td>${fmt(r.poradove_cislo)}</td>
-                <td>
-                  <span class="badge badge-amber badge-clickable"
-                        title="Otvoriť Kataster Portal (${esc(r.katastralne_uzemie)}, LV ${fmt(r.lv)})"
-                        onclick="window.openKatasterLV('${esc(r.katastralne_uzemie).replace(/'/g, "\\'")}', '${r.poradove_cislo}', '${r.lv}')">
-                    📄 LV ${fmt(r.lv)} ↗
-                  </span>
-                </td>
-                <td>${esc(r.meno_vlastnika)}</td>
-                <td>
-                  <a href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.poradove_cislo}&outputType=html"
-                     target="_blank" rel="noopener" class="btn-lv-link"
-                     title="Otvoriť priamy výpis z Katastra pre LV ${fmt(r.lv)} (${esc(r.katastralne_uzemie)})">
-                    📜 Výpis LV ${fmt(r.lv)} ↗
-                  </a>
-                </td>
-              </tr>`).join('')}
-          </tbody>
-        </table>`;
+      hideDossier();
     }
 
-    renderPagination('overview-search-pagination', page, data.total, 50, loadOverviewSearch);
     setOverviewSearching(false, `${fmt(data.total)} záznamov`);
   } catch (e) {
     if (e.name === 'AbortError') return;
     setOverviewSearching(false);
     showToast('Chyba hľadania: ' + e.message, 'error');
-    tableWrap.innerHTML = `<div class="empty-state" style="color:#ef4444">❌ ${esc(e.message)}</div>`;
+    const nw = document.getElementById('overview-names-wrap');
+    if (nw) nw.innerHTML = `<div class="empty-state" style="color:#ef4444">❌ ${esc(e.message)}</div>`;
   }
+}
+
+function fillNameSelect(names) {
+  const sel = document.getElementById('pick-name');
+  if (!sel) return;
+  const current = ovSearch.pickName;
+  sel.innerHTML = `<option value="">— vyber meno —</option>` + (names || []).map((r) => {
+    const n = r.meno_vlastnika;
+    return `<option value="${esc(n).replace(/"/g, '&quot;')}">${esc(n)} (${fmt(r.recs)} · ${esc(r.top_ku || '')})</option>`;
+  }).join('');
+  if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
+}
+
+function hideDossier() {
+  const d = document.getElementById('overview-dossier');
+  const b = document.getElementById('overview-browse');
+  if (d) { d.hidden = true; d.innerHTML = ''; }
+  if (b) b.hidden = false;
+}
+
+async function onPickName(name) {
+  ovSearch.pickName = name || '';
+  ovSearch.pickKu = '';
+  const kuSel = document.getElementById('pick-ku');
+  const nameSel = document.getElementById('pick-name');
+  if (nameSel && name) nameSel.value = name;
+  writeSearchUrl(ovSearch.q);
+  if (!name) {
+    if (kuSel) {
+      kuSel.disabled = true;
+      kuSel.innerHTML = '<option value="">— najprv meno —</option>';
+    }
+    hideDossier();
+    return;
+  }
+  await loadKuOptions(name);
+}
+
+async function loadKuOptions(name, preferKu) {
+  const kuSel = document.getElementById('pick-ku');
+  if (!kuSel) return;
+  kuSel.disabled = true;
+  kuSel.innerHTML = '<option value="">Načítavam k.ú.…</option>';
+  try {
+    const data = await apiFetch(`/name-districts?name=${encodeURIComponent(name)}`).then((r) => r.json());
+    const rows = data.rows || [];
+    kuSel.innerHTML = `<option value="">— vyber k.ú. (${rows.length}) —</option>` + rows.map((r) => {
+      const label = `${r.katastralne_uzemie} · ${fmt(r.lvs)} LV · podiel ${r.portion}`;
+      return `<option value="${esc(r.katastralne_uzemie).replace(/"/g, '&quot;')}">${esc(label)}</option>`;
+    }).join('');
+    kuSel.disabled = false;
+    const pick = preferKu && rows.some((r) => r.katastralne_uzemie === preferKu)
+      ? preferKu
+      : (rows.length === 1 ? rows[0].katastralne_uzemie : '');
+    if (pick) {
+      kuSel.value = pick;
+      ovSearch.pickKu = pick;
+      await loadDossier(name, pick);
+    } else {
+      hideDossier();
+    }
+  } catch (e) {
+    kuSel.innerHTML = `<option value="">Chyba: ${esc(e.message)}</option>`;
+  }
+}
+
+async function onPickKuFromList(ku) {
+  if (!ovSearch.pickName) {
+    showToast('Najprv vyber meno, potom k.ú.', 'info');
+    return;
+  }
+  const kuSel = document.getElementById('pick-ku');
+  if (kuSel) {
+    if (![...kuSel.options].some((o) => o.value === ku)) {
+      const opt = document.createElement('option');
+      opt.value = ku;
+      opt.textContent = ku;
+      kuSel.appendChild(opt);
+    }
+    kuSel.value = ku;
+    kuSel.disabled = false;
+  }
+  await onPickKu(ku);
+}
+
+async function onPickKu(ku) {
+  ovSearch.pickKu = ku || '';
+  writeSearchUrl(ovSearch.q);
+  if (!ku || !ovSearch.pickName) {
+    hideDossier();
+    return;
+  }
+  await loadDossier(ovSearch.pickName, ku);
+}
+
+function clearPicks() {
+  ovSearch.pickName = '';
+  ovSearch.pickKu = '';
+  const nameSel = document.getElementById('pick-name');
+  const kuSel = document.getElementById('pick-ku');
+  if (nameSel) nameSel.value = '';
+  if (kuSel) {
+    kuSel.disabled = true;
+    kuSel.innerHTML = '<option value="">— najprv meno —</option>';
+  }
+  writeSearchUrl(ovSearch.q);
+  hideDossier();
+}
+
+async function loadDossier(name, ku) {
+  const box = document.getElementById('overview-dossier');
+  const browse = document.getElementById('overview-browse');
+  if (!box) return;
+  box.hidden = false;
+  if (browse) browse.hidden = true;
+  writeSearchUrl(ovSearch.q, name, ku);
+  box.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Načítavam ${esc(name)} v ${esc(ku)}…</div>`;
+  try {
+    const data = await apiFetch(`/name-ku-detail?name=${encodeURIComponent(name)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
+    if (data.error) throw new Error(data.error);
+    renderDossier(data);
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
+  }
+}
+
+function renderDossier(data) {
+  const box = document.getElementById('overview-dossier');
+  if (!box) return;
+  const s = data.summary || {};
+  const lvs = data.lvs || [];
+  const tr = data.transferred || [];
+  const co = data.coowners || [];
+  const chance = nameChance({
+    solo_lvs: s.solo_lvs,
+    top_ku_pct: 100,
+    avg_co: s.avg_co,
+    portion: s.portion,
+  });
+  window._overviewLvs = lvs.map((r) => ({ lv: r.lv, ku: r.cislo_ku, kuName: r.ku_name }));
+
+  box.innerHTML = `
+    <div class="dossier">
+      <div class="card-title">
+        ${esc(s.name)}
+        <span>${esc(s.ku)}${s.cislo_ku ? ` · kód ${fmt(s.cislo_ku)}` : ''}</span>
+      </div>
+      <div class="stat-grid ov-search-stats">
+        <div class="stat-card"><div class="stat-label">LV v tomto k.ú.</div><div class="stat-value">${fmt(s.lvs)}</div></div>
+        <div class="stat-card"><div class="stat-label">Solo LV</div><div class="stat-value">${fmt(s.solo_lvs)}</div><div class="stat-sub">jediný neznámy na liste</div></div>
+        <div class="stat-card"><div class="stat-label">Odhad podielu</div><div class="stat-value">${s.portion ?? '—'}</div><div class="stat-sub">súčet 1/N na LV</div></div>
+        <div class="stat-card"><div class="stat-label">Ø spoluvlastníkov</div><div class="stat-value">${s.avg_co ?? '—'}</div><div class="stat-sub">neznámych na LV</div></div>
+        <div class="stat-card"><div class="stat-label">Šanca</div><div class="stat-value" style="font-size:1.1rem"><span class="badge ${chance.cls}">${chance.label}</span></div></div>
+      </div>
+      <div class="bulk-lv-bar">
+        <div>Všetko pre toto meno v tomto k.ú.</div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="bulk-lv-btn" onclick="window.shareSearchLink()">↗ Zdieľať</button>
+          ${lvs.length ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť ${lvs.length} výpisov ↗</button>` : ''}
+        </div>
+      </div>
+      <div class="card-title" style="margin:.75rem 0">Listy vlastníctva</div>
+      <div class="table-wrap">
+        ${!lvs.length ? '<div class="empty-state">Žiadne LV</div>' : `
+        <table>
+          <thead><tr><th>LV</th><th>Neznámych na LV</th><th>Solo</th><th>Kataster</th></tr></thead>
+          <tbody>
+            ${lvs.map((r) => `
+              <tr>
+                <td><span class="badge badge-amber badge-clickable" onclick="window.openKatasterLV('${esc(r.ku_name).replace(/'/g, "\\'")}', '${r.cislo_ku}', '${r.lv}')">📄 LV ${fmt(r.lv)} ↗</span></td>
+                <td>${fmt(r.names_on_lv)}</td>
+                <td>${Number(r.solo) ? '<span class="badge badge-green">áno</span>' : '—'}</td>
+                <td><a class="btn-lv-link" target="_blank" rel="noopener"
+                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+      <div class="card-title" style="margin:1rem 0 .5rem">Ďalší neznámi na tých istých LV</div>
+      <div class="table-wrap">
+        ${!co.length ? '<div class="empty-state">Žiadni ďalší v registri</div>' : `
+        <table>
+          <thead><tr><th>Meno</th><th>Spoločné LV</th><th></th></tr></thead>
+          <tbody>
+            ${co.map((r) => `
+              <tr class="ov-click-row" onclick="onPickName('${esc(r.meno_vlastnika).replace(/'/g, "\\'")}')">
+                <td>${esc(r.meno_vlastnika)}</td>
+                <td><span class="badge badge-blue">${fmt(r.shared_lvs)}</span></td>
+                <td>zvoliť →</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+      <div class="card-title" style="margin:1rem 0 .5rem">Prevedené práva na týchto LV</div>
+      <div class="table-wrap">
+        ${!tr.length ? '<div class="empty-state">Žiadny prevod v 2022–2025</div>' : `
+        <table>
+          <thead><tr><th>Rok</th><th>LV</th><th>Na koho</th><th>Účinnosť</th><th>CRZ</th></tr></thead>
+          <tbody>
+            ${tr.map((r) => `
+              <tr>
+                <td>${fmt(r.year)}</td>
+                <td>${fmt(r.lv)}</td>
+                <td>${esc(r.vlastnik_lv)}</td>
+                <td>${esc(r.datum_ucinnosti)}</td>
+                <td>${esc(r.crz)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>`;
 }
 
 window.dismissSourceBanner = dismissSourceBanner;
@@ -673,6 +856,10 @@ window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
 window.showNameDistricts = showNameDistricts;
+window.onPickName = onPickName;
+window.onPickKu = onPickKu;
+window.onPickKuFromList = onPickKuFromList;
+window.clearPicks = clearPicks;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
@@ -2399,6 +2586,10 @@ window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
 window.showNameDistricts = showNameDistricts;
+window.onPickName = onPickName;
+window.onPickKu = onPickKu;
+window.onPickKuFromList = onPickKuFromList;
+window.clearPicks = clearPicks;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
@@ -2423,14 +2614,18 @@ async function boot() {
     await initDb();
     showSourceBannerIfNeeded();
     const sharedQ = searchQueryFromUrl();
+    const params = new URLSearchParams(location.search);
+    ovSearch.pickName = (params.get('name') || '').trim();
+    ovSearch.pickKu = (params.get('ku') || '').trim();
     tabLoaded['overview'] = true;
-    if (sharedQ.length >= 2) {
+    if (sharedQ.length >= 2 || ovSearch.pickName) {
       const input = document.getElementById('overview-search');
-      if (input) input.value = sharedQ;
-      ovSearch.q = sharedQ;
+      const q = sharedQ || ovSearch.pickName;
+      if (input) input.value = q;
+      ovSearch.q = q;
       document.body.classList.add('search-mode');
       showTab('overview');
-      setOverviewSearching(true, `Hľadám „${sharedQ}“…`);
+      setOverviewSearching(true, `Hľadám „${q}“…`);
       await loadOverviewSearch(1);
       loadOverview();
     } else {

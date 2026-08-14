@@ -105,23 +105,34 @@
         <span id="overview-search-label"></span>
       </div>
       <div class="stat-grid ov-search-stats" id="overview-search-counts"></div>
-      <div style="margin:1.25rem 0">
-        <div class="card-title" style="margin-bottom:.35rem">Unikátne mená — nárok podľa k.ú.</div>
+
+      <div class="pick-bar" id="overview-pick-bar">
+        <label class="pick-field">
+          <span>Meno</span>
+          <select id="pick-name" onchange="onPickName(this.value)">
+            <option value="">— vyber meno —</option>
+          </select>
+        </label>
+        <label class="pick-field">
+          <span>Katast. územie</span>
+          <select id="pick-ku" onchange="onPickKu(this.value)" disabled>
+            <option value="">— najprv meno —</option>
+          </select>
+        </label>
+        <button class="btn btn-ghost" type="button" onclick="clearPicks()">Zrušiť výber</button>
+      </div>
+
+      <div id="overview-dossier" hidden></div>
+
+      <div id="overview-browse" style="margin:1.25rem 0">
+        <div class="card-title" style="margin-bottom:.35rem">Unikátne mená — klikni meno, potom k.ú.</div>
         <p class="insight-note">
-          Odhad podielu = súčet 1/N na každom LV (N = koľko neznámych je na tom liste).
-          Solo LV = jediný neznámy vlastník. Šanca = koncentrácia v jednom k.ú. + málo spoluvlastníkov (väčší kus pôdy).
-          Nie je to výmera z katastra.
+          Odhad podielu = 1/N na LV (N = neznámi na tom liste). Solo LV = jediný neznámy. Nie je to výmera z katastra.
         </p>
         <div class="table-wrap" id="overview-names-wrap"></div>
-        <div id="overview-name-districts" hidden></div>
-      </div>
-      <div style="margin:1.25rem 0">
-        <div class="card-title" style="margin-bottom:.75rem">Obce / katast. územia</div>
+        <div class="card-title" style="margin:1rem 0 .75rem">Obce v hľadaní</div>
         <div class="table-wrap" id="overview-places-wrap"></div>
       </div>
-      <div id="overview-search-bulk"></div>
-      <div class="table-wrap" id="overview-search-table"></div>
-      <div class="pagination" id="overview-search-pagination"></div>
     </div>
 
     <div class="hero animate-in" id="global-stats-hero">

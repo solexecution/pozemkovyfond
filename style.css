@@ -332,6 +332,41 @@ body {
 .ov-search-stats .stat-sub { color: var(--text-muted); }
 .ov-click-row { cursor: pointer; }
 .ov-click-row:hover { background: var(--bg-card-hover); }
+.pick-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: flex-end;
+  margin: 1rem 0 1.1rem;
+  padding: 0.85rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.pick-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 160px;
+}
+.pick-field span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.pick-field select {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.55rem 0.7rem;
+}
 .insight-note {
   font-size: 0.75rem;
   color: var(--text-secondary);
