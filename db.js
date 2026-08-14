@@ -668,32 +668,47 @@ async function soloLvs(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
   const offset = (page - 1) * limit;
-  const kuPred = tokenPred('ku_norm', q.ku || q.f_ku || '', { prefixFirst: false });
-  const namePred = tokenPred('meno_norm', q.q || q.name || q.f_name || '');
+  const kuPred = tokenPred('s.ku_norm', q.ku || q.f_ku || '', { prefixFirst: false });
+  const namePred = tokenPred('s.meno_norm', q.q || q.name || q.f_name || '');
   const conds = [kuPred, namePred].filter(Boolean);
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const SOLO_SORT = {
-    meno_vlastnika: 'meno_norm',
-    katastralne_uzemie: 'katastralne_uzemie',
-    cislo_ku: 'cislo_ku',
-    lv: 'lv',
-    portion: 'lv',
-    kataster: 'lv',
+    meno_vlastnika: 's.meno_norm',
+    katastralne_uzemie: 's.katastralne_uzemie',
+    cislo_ku: 's.cislo_ku',
+    lv: 's.lv',
+    portion: 's.lv',
+    kataster: 's.lv',
+    vymera: 'd.celkova_vymera_m2',
+    parcely: 'd.pocet_parciel_c',
   };
-  const sortCol = SOLO_SORT[q.sort_col] || 'katastralne_uzemie';
+  const sortCol = SOLO_SORT[q.sort_col] || 's.katastralne_uzemie';
   const sortDir = q.sort_dir === 'DESC' ? 'DESC' : 'ASC';
-  const order = sortCol === 'lv'
-    ? `lv ${sortDir}`
-    : `${sortCol} ${sortDir}, lv ${sortDir}`;
+  const order = `${sortCol} ${sortDir} NULLS LAST, s.lv ${sortDir}`;
 
-  const cntRow = await queryObjects(`SELECT COUNT(*) AS cnt FROM solo_lvs ${where}`);
+  const cntRow = await queryObjects(`SELECT COUNT(*) AS cnt FROM solo_lvs s ${where}`);
   const rows = await queryObjects(`
-    SELECT meno_vlastnika, katastralne_uzemie, cislo_ku, lv
-    FROM solo_lvs ${where}
+    SELECT
+      s.meno_vlastnika, s.katastralne_uzemie, s.cislo_ku, s.lv,
+      d.celkova_vymera_m2, d.pocet_parciel_c, d.pocet_parciel_e, d.pocet_vlastnikov
+    FROM solo_lvs s
+    LEFT JOIN lv_details d ON s.lv = d.lv AND s.cislo_ku = d.cislo_ku
+    ${where}
     ORDER BY ${order}
     LIMIT ${limit} OFFSET ${offset}
   `);
-  return { total: cntRow[0].cnt, page, limit, rows };
+
+  const keys = (rows || []).filter((r) => r.celkova_vymera_m2 > 0).map((r) => `(${Number(r.lv)},${Number(r.cislo_ku)})`);
+  let parcels = [];
+  if (keys.length) {
+    parcels = await queryObjects(`
+      SELECT lv, cislo_ku, register_type, parcel_no, vymera_m2, druh_pozemku
+      FROM lv_parcels
+      WHERE (lv, cislo_ku) IN (${keys.join(',')})
+      ORDER BY register_type, parcel_no
+    `);
+  }
+  return { total: cntRow[0].cnt, page, limit, rows, parcels };
 }
 
 async function owners(q) {

@@ -8,7 +8,8 @@
     "build": "node build-db.js",
     "build-data": "node export-parquet.js",
     "start": "npx --yes serve -l 3000 .",
-    "dev": "npx --yes serve -l 3000 ."
+    "dev": "npx --yes serve -l 3000 .",
+    "fetch-solo": "node fetch-solo-lvs.mjs"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.5-r.4",

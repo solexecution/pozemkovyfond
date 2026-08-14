@@ -1209,13 +1209,25 @@ async function loadSoloLvs(page = 1) {
       lv: r.lv, ku: r.cislo_ku, kuName: r.katastralne_uzemie,
     }));
     const bulk = document.getElementById('solo-bulk-bar');
+    const withArea = (data.rows || []).filter((r) => Number(r.celkova_vymera_m2) > 0).length;
+    const kuArg = (soloState.ku || '').trim();
+    const nameArg = (soloState.name || '').trim();
+    const fetchCmd = `node fetch-solo-lvs.mjs${kuArg ? ` --ku "${kuArg}"` : ''}${nameArg ? ` --name "${nameArg}"` : ''} --limit 20 --headed`;
     if (bulk) {
       bulk.innerHTML = data.rows.length ? `
         <div class="bulk-lv-bar">
-          <div>Stránka: <strong>${data.rows.length}</strong> solo LV</div>
-          <button class="bulk-lv-btn" style="background:linear-gradient(135deg,#10b981,#059669)"
-                  onclick="window.openAllLvs(window._soloAllPage)">🌲 Otvoriť tieto výpisy ↗</button>
-        </div>` : '';
+          <div>Stránka: <strong>${data.rows.length}</strong> solo LV · výmera z Katastra: <strong>${withArea}</strong></div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+            <button class="bulk-lv-btn" style="background:linear-gradient(135deg,#10b981,#059669)"
+                    onclick="window.openAllLvs(window._soloAllPage)">🌲 Otvoriť tieto výpisy ↗</button>
+            <button class="bulk-lv-btn" type="button" onclick="copySoloFetchCmd()">⬇ Stiahnuť výmeru (Playwright)</button>
+          </div>
+        </div>
+        <p class="insight-note" style="margin-top:.6rem">
+          PZF CSV nemá m². Výmeru berieme z Katastra cez Playwright (jednorazová captcha v okne).
+          Filter k.ú. je povinný — bez neho je 491 500 listov. Príkaz:
+          <code id="solo-fetch-cmd">${esc(fetchCmd)}</code>
+        </p>` : '';
     }
     if (!data.rows.length) {
       wrap.innerHTML = `<div class="empty-state">Žiadne solo LV${soloState.ku ? ` pre k.ú. „${esc(soloState.ku)}“` : ''}.</div>`;
@@ -1235,6 +1247,8 @@ async function loadSoloLvs(page = 1) {
             ${sTh('k.ú.', 'katastralne_uzemie')}
             ${sTh('Kód', 'cislo_ku')}
             ${sTh('LV', 'lv')}
+            ${sTh('Výmera m²', 'vymera')}
+            ${sTh('Parcely', 'parcely')}
             ${sTh('Odhad podielu', 'portion')}
             ${sTh('Kataster', 'kataster')}
           </tr>
@@ -1243,6 +1257,10 @@ async function loadSoloLvs(page = 1) {
           ${data.rows.map((r) => {
             const clean = cleanPersonName(r.meno_vlastnika);
             const safeKu = esc(r.katastralne_uzemie).replace(/'/g, "\\'");
+            const m2 = Number(r.celkova_vymera_m2);
+            const pc = Number(r.pocet_parciel_c || 0) + Number(r.pocet_parciel_e || 0);
+            const plist = (data.parcels || []).filter((p) => Number(p.lv) === Number(r.lv) && Number(p.cislo_ku) === Number(r.cislo_ku));
+            const tip = plist.map((p) => `${p.register_type} ${p.parcel_no}: ${fmt(Math.round(p.vymera_m2))} m² ${p.druh_pozemku || ''}`).join('\n');
             return `
               <tr>
                 <td><strong>${esc(clean)}</strong></td>
@@ -1250,6 +1268,8 @@ async function loadSoloLvs(page = 1) {
                 <td>${fmt(r.cislo_ku)}</td>
                 <td><span class="badge badge-amber badge-clickable"
                       onclick="window.openKatasterLV('${safeKu}', '${r.cislo_ku}', '${r.lv}')">📄 LV ${fmt(r.lv)} ↗</span></td>
+                <td>${m2 > 0 ? `<strong title="${esc(tip)}">${fmt(Math.round(m2))} m²</strong>` : '<span style="opacity:.45">—</span>'}</td>
+                <td>${pc ? `<span class="badge badge-blue" title="${esc(tip)}">${fmt(pc)}</span>` : '—'}</td>
                 <td><strong>1.0</strong></td>
                 <td><a class="btn-lv-link" target="_blank" rel="noopener"
                       href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
@@ -1263,11 +1283,25 @@ async function loadSoloLvs(page = 1) {
   }
 }
 
+function copySoloFetchCmd() {
+  const el = document.getElementById('solo-fetch-cmd');
+  const cmd = el?.textContent || 'node fetch-solo-lvs.mjs --ku "sulin" --limit 20 --headed';
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(cmd).then(
+      () => showToast('Príkaz skopírovaný. Spusti ho v priečinku projektu (headed = captcha raz).', 'success'),
+      () => showToast(cmd, 'info'),
+    );
+  } else {
+    showToast(cmd, 'info');
+  }
+}
+
 window.onSoloKuInput = onSoloKuInput;
 window.onSoloNameInput = onSoloNameInput;
 window.clearSoloFilter = clearSoloFilter;
 window.loadSoloLvs = loadSoloLvs;
 window.sortSoloLvs = sortSoloLvs;
+window.copySoloFetchCmd = copySoloFetchCmd;
 
 // ════════════════════════════════════════════════════════════════════════════
 //  OWNERS TAB
@@ -3000,6 +3034,7 @@ window.loadOverviewSearch = loadOverviewSearch;
 window.sortOverviewNames = sortOverviewNames;
 window.loadSoloLvs = loadSoloLvs;
 window.sortSoloLvs = sortSoloLvs;
+window.copySoloFetchCmd = copySoloFetchCmd;
 window.onSoloKuInput = onSoloKuInput;
 window.onSoloNameInput = onSoloNameInput;
 window.clearSoloFilter = clearSoloFilter;

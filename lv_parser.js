@@ -1,3 +1,39 @@
+function decodeEntities(s) {
+  return String(s || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
+function htmlToText(html) {
+  return decodeEntities(String(html || ''))
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(tr|p|div|h[1-6]|li|table)>/gi, '\n')
+    .replace(/<\/t[dh]>/gi, '\t')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+function parseArea(raw) {
+  if (raw == null) return 0;
+  const n = parseFloat(String(raw).replace(/\s+/g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function looksLikeParcelNo(s) {
+  return /^\d+[\/\d]*$/.test(String(s || '').trim());
+}
+
+export function parseLvHtml(html, defaultLv = 0, defaultKuCode = 0) {
+  return parseLvText(htmlToText(html), defaultLv, defaultKuCode);
+}
+
 export function parseLvText(text, defaultLv = 0, defaultKuCode = 0) {
   const okresMatch = text.match(/Okres\s*:\s*\d*\s*([^\t\n\r]+)/i);
   const obecMatch = text.match(/Obec\s*:\s*\d*\s*([^\t\n\r]+)/i);
@@ -14,24 +50,37 @@ export function parseLvText(text, defaultLv = 0, defaultKuCode = 0) {
   const parcels = [];
   const lines = text.split(/\r?\n/);
   let currentReg = 'C';
-  let inPartA = false;
+  let inPartB = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    if (line.includes('ČASŤ A: MAJETKOVÁ PODSTATA')) inPartA = true;
-    if (line.includes('ČASŤ B: VLASTNÍCI')) inPartA = false;
+    if (line.includes('ČASŤ B: VLASTNÍCI') || line.includes('ČASŤ B: VLASTNICI')) inPartB = true;
+    if (line.includes('ČASŤ A: MAJETKOVÁ PODSTATA')) inPartB = false;
 
-    if (inPartA) {
-      if (line.includes('Parcely registra „E"')) currentReg = 'E';
-      if (line.includes('Parcely registra „C"')) currentReg = 'C';
+    if (!inPartB) {
+      if (/parcely registra\s*[„"]?E/i.test(line)) currentReg = 'E';
+      if (/parcely registra\s*[„"]?C/i.test(line)) currentReg = 'C';
 
-      const parts = line.split('\t');
-      if (parts.length >= 3 && /^\d+[\/\d]*$/.test(parts[0])) {
-        const vymera = parseFloat(parts[1].replace(/\s+/g, '').replace(',', '.')) || 0;
-        parcels.push({
-          lv, cislo_ku, register_type: currentReg,
-          parcel_no: parts[0], vymera_m2: vymera, druh_pozemku: parts[2]
-        });
+      const parts = line.split('\t').map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2 && looksLikeParcelNo(parts[0])) {
+        const vymera = parseArea(parts[1]);
+        if (vymera > 0) {
+          parcels.push({
+            lv, cislo_ku, register_type: currentReg,
+            parcel_no: parts[0], vymera_m2: vymera, druh_pozemku: parts[2] || '',
+          });
+          continue;
+        }
+      }
+      const spaced = line.match(/^(\d+(?:\/\d+)?)\s+(\d[\d\s]{0,14}(?:[.,]\d+)?)\s+(.{3,80})$/);
+      if (spaced) {
+        const vymera = parseArea(spaced[2]);
+        if (vymera > 0) {
+          parcels.push({
+            lv, cislo_ku, register_type: currentReg,
+            parcel_no: spaced[1], vymera_m2: vymera, druh_pozemku: spaced[3].trim(),
+          });
+        }
       }
     }
   }
@@ -47,11 +96,12 @@ export function parseLvText(text, defaultLv = 0, defaultKuCode = 0) {
     const line = ownerLines[i].trim();
     if (!line) continue;
 
-    const m = line.match(/^(\d+)\t([^\t]+)(?:\t([^\t]+))?/);
+    const m = line.match(/^(\d+)\t([^\t]+)(?:\t([^\t]+))?/)
+      || line.match(/^(\d+)\s+(.+?)\s+(\d+)\s*\/\s*(\d+)\s*$/);
     if (m) {
       const poradove = parseInt(m[1], 10);
       const namePart = m[2];
-      const podielPart = m[3] || namePart;
+      const podielPart = m[4] ? `${m[3]}/${m[4]}` : (m[3] || namePart);
 
       const fracMatch = podielPart.match(/(\d+)\/(\d+)/) || namePart.match(/(\d+)\/(\d+)/);
       const num = fracMatch ? parseInt(fracMatch[1], 10) : 1;
