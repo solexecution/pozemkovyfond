@@ -265,6 +265,8 @@ const ovSearch = {
   pickKu: '',
   names: [],
   variantMap: {},
+  sortCol: 'portion',
+  sortDir: 'DESC',
 };
 
 function cleanPersonName(raw) {
@@ -565,6 +567,99 @@ function openOverviewInOwners(name, ku) {
   loadOwners(1);
 }
 
+function overviewNameSortVal(r, col) {
+  switch (col) {
+    case 'meno_vlastnika': return nameKey(r.meno_vlastnika);
+    case 'recs': return Number(r.recs || 0);
+    case 'lvs': return Number(r.lvs || 0);
+    case 'top_ku': return String(r.top_ku || '').toLowerCase();
+    case 'top_ku_pct': return Number(r.top_ku_pct || 0);
+    case 'portion': return Number(r.portion || 0);
+    case 'solo_lvs': return Number(r.solo_lvs || 0);
+    case 'chance': {
+      const ch = nameChance(r);
+      return ch.label === 'Vysoká' ? 2 : ch.label === 'Stredná' ? 1 : 0;
+    }
+    default: return Number(r.portion || 0);
+  }
+}
+
+function sortedOverviewNames() {
+  const col = ovSearch.sortCol || 'portion';
+  const dir = ovSearch.sortDir === 'ASC' ? 1 : -1;
+  return [...(ovSearch.names || [])].sort((a, b) => {
+    const va = overviewNameSortVal(a, col);
+    const vb = overviewNameSortVal(b, col);
+    if (typeof va === 'string' || typeof vb === 'string') {
+      const c = String(va).localeCompare(String(vb), 'sk', { sensitivity: 'base' });
+      if (c) return c * dir;
+    } else if (va !== vb) {
+      return (va - vb) * dir;
+    }
+    return Number(b.portion || 0) - Number(a.portion || 0) || Number(b.recs || 0) - Number(a.recs || 0);
+  });
+}
+
+function sortOverviewNames(col) {
+  if (ovSearch.sortCol === col) {
+    ovSearch.sortDir = ovSearch.sortDir === 'ASC' ? 'DESC' : 'ASC';
+  } else {
+    ovSearch.sortCol = col;
+    ovSearch.sortDir = (col === 'meno_vlastnika' || col === 'top_ku') ? 'ASC' : 'DESC';
+  }
+  renderOverviewNames();
+}
+
+function renderOverviewNames() {
+  const namesWrap = document.getElementById('overview-names-wrap');
+  if (!namesWrap) return;
+  if (!ovSearch.names?.length) {
+    namesWrap.innerHTML = '<div class="empty-state">Žiadne mená</div>';
+    return;
+  }
+  const th = (label, col) => {
+    const active = ovSearch.sortCol === col;
+    const icon = active ? (ovSearch.sortDir === 'ASC' ? '↑' : '↓') : '↕';
+    return `<th class="sortable${active ? ' sort-active' : ''}" onclick="event.stopPropagation(); sortOverviewNames('${col}')">${label}<span class="sort-ic">${icon}</span></th>`;
+  };
+  namesWrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          ${th('Meno', 'meno_vlastnika')}
+          ${th('Záznamy', 'recs')}
+          ${th('LV', 'lvs')}
+          ${th('Hlavné k.ú.', 'top_ku')}
+          ${th('V k.ú.', 'top_ku_pct')}
+          ${th('Odhad podielu', 'portion')}
+          ${th('Solo LV', 'solo_lvs')}
+          ${th('Šanca (väčší kus)', 'chance')}
+        </tr>
+      </thead>
+      <tbody>
+        ${sortedOverviewNames().map((r) => {
+          const safe = esc(r.meno_vlastnika).replace(/'/g, "\\'");
+          const ch = nameChance(r);
+          const pct = Number(r.top_ku_pct || 0);
+          return `
+          <tr class="ov-click-row" onclick="onPickName('${safe}')" title="Vybrať toto meno a zvoliť k.ú.">
+            <td><strong>${esc(r.meno_vlastnika)}</strong></td>
+            <td>${fmt(r.recs)}</td>
+            <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
+            <td>${esc(r.top_ku || '—')}</td>
+            <td>${fmt(r.top_ku_lvs)} LV · ${pct}%</td>
+            <td title="Súčet 1/N neznámych na LV"><strong>${r.portion ?? '—'}</strong></td>
+            <td><span class="badge badge-green">${fmt(r.solo_lvs)}</span></td>
+            <td>
+              <span class="badge ${ch.cls}">${ch.label}</span>
+              <div class="chance-bar" title="Koncentrácia v hlavnom k.ú. ${pct}%"><span style="width:${Math.min(100, pct)}%"></span></div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
 async function loadOverviewSearch(page = 1) {
   const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
   ovSearch.q = q;
@@ -627,46 +722,7 @@ async function loadOverviewSearch(page = 1) {
 
     ovSearch.names = groupCleanNames(data.names || []);
     fillNameSelect(ovSearch.names);
-    if (!data.names?.length) {
-      namesWrap.innerHTML = '<div class="empty-state">Žiadne mená</div>';
-    } else {
-      namesWrap.innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th>Meno</th>
-              <th>Záznamy</th>
-              <th>LV</th>
-              <th>Hlavné k.ú.</th>
-              <th>V k.ú.</th>
-              <th>Odhad podielu</th>
-              <th>Solo LV</th>
-              <th>Šanca (väčší kus)</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${ovSearch.names.map((r) => {
-              const safe = esc(r.meno_vlastnika).replace(/'/g, "\\'");
-              const ch = nameChance(r);
-              const pct = Number(r.top_ku_pct || 0);
-              return `
-              <tr class="ov-click-row" onclick="onPickName('${safe}')" title="Vybrať toto meno a zvoliť k.ú.">
-                <td><strong>${esc(r.meno_vlastnika)}</strong></td>
-                <td>${fmt(r.recs)}</td>
-                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
-                <td>${esc(r.top_ku || '—')}</td>
-                <td>${fmt(r.top_ku_lvs)} LV · ${pct}%</td>
-                <td title="Súčet 1/N neznámych na LV"><strong>${r.portion ?? '—'}</strong></td>
-                <td><span class="badge badge-green">${fmt(r.solo_lvs)}</span></td>
-                <td>
-                  <span class="badge ${ch.cls}">${ch.label}</span>
-                  <div class="chance-bar" title="Koncentrácia v hlavnom k.ú. ${pct}%"><span style="width:${Math.min(100, pct)}%"></span></div>
-                </td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>`;
-    }
+    renderOverviewNames();
 
     const placesWrap = document.getElementById('overview-places-wrap');
     if (!data.places?.length) {
@@ -978,6 +1034,7 @@ window.clearPicks = clearPicks;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
+window.sortOverviewNames = sortOverviewNames;
 
 const soloState = { page: 1, ku: '' };
 let _soloTimer = null;
@@ -2797,6 +2854,7 @@ window.clearPicks = clearPicks;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
+window.sortOverviewNames = sortOverviewNames;
 window.loadSoloLvs = loadSoloLvs;
 window.onSoloKuInput = onSoloKuInput;
 window.clearSoloFilter = clearSoloFilter;
