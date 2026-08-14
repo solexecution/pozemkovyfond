@@ -304,6 +304,91 @@ async function stats() {
   return rows[0];
 }
 
+function bothWhere(q) {
+  const tokens = normStr(q).split(/\s+/).filter(Boolean);
+  if (!tokens.length) return '';
+  return tokens
+    .map((t) => `(meno_norm LIKE '%${t}%' OR ku_norm LIKE '%${t}%')`)
+    .join(' AND ');
+}
+
+async function overviewSearch(q) {
+  const raw = (q.q || '').trim();
+  if (raw.length < 2) {
+    return { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0, names: [], places: [], rows: [], lvs: [], page: 1, limit: 50 };
+  }
+  const page = Math.max(1, parseInt(q.page, 10) || 1);
+  const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
+  const offset = (page - 1) * limit;
+  const fName = normStr(q.f_name || '');
+  const fKu = normStr(q.f_ku || '');
+
+  const conds = [bothWhere(raw)];
+  if (fName) conds.push(`meno_norm LIKE '%${fName}%'`);
+  if (fKu) conds.push(`ku_norm LIKE '%${fKu}%'`);
+  const where = `WHERE ${conds.filter(Boolean).join(' AND ')}`;
+
+  const [cntRow, names, places, rows, lvRows] = await Promise.all([
+    queryObjects(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(DISTINCT meno_vlastnika) AS unique_names,
+        COUNT(DISTINCT katastralne_uzemie) AS unique_places,
+        COUNT(DISTINCT lv) AS unique_lv
+      FROM unknown_owners ${where}
+    `),
+    queryObjects(`
+      SELECT
+        meno_vlastnika,
+        COUNT(*) AS recs,
+        COUNT(DISTINCT katastralne_uzemie) AS places,
+        COUNT(DISTINCT lv) AS lvs
+      FROM unknown_owners ${where}
+      GROUP BY meno_vlastnika
+      ORDER BY recs DESC, meno_vlastnika
+      LIMIT 40
+    `),
+    queryObjects(`
+      SELECT
+        katastralne_uzemie,
+        poradove_cislo,
+        COUNT(*) AS recs,
+        COUNT(DISTINCT meno_vlastnika) AS names,
+        COUNT(DISTINCT lv) AS lvs
+      FROM unknown_owners ${where}
+      GROUP BY katastralne_uzemie, poradove_cislo
+      ORDER BY recs DESC, katastralne_uzemie
+      LIMIT 40
+    `),
+    queryObjects(`
+      SELECT id, katastralne_uzemie, poradove_cislo, lv, meno_vlastnika
+      FROM unknown_owners ${where}
+      ORDER BY katastralne_uzemie, meno_vlastnika, lv
+      LIMIT ${limit} OFFSET ${offset}
+    `),
+    queryObjects(`
+      SELECT DISTINCT lv, poradove_cislo, katastralne_uzemie
+      FROM unknown_owners ${where}
+      ORDER BY katastralne_uzemie, lv
+      LIMIT 200
+    `),
+  ]);
+
+  const counts = cntRow[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
+  return {
+    total: counts.total,
+    unique_names: counts.unique_names,
+    unique_places: counts.unique_places,
+    unique_lv: counts.unique_lv,
+    names,
+    places,
+    rows,
+    lvs: lvRows.map((r) => ({ lv: r.lv, ku: r.poradove_cislo, kuName: r.katastralne_uzemie })),
+    page,
+    limit,
+  };
+}
+
 async function owners(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
@@ -718,6 +803,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'alpha-distribution':
       result = await queryObjects(`SELECT * FROM v_alpha_distribution`);
+      break;
+    case 'overview-search':
+      result = await overviewSearch(q);
       break;
     case 'owners':
       result = await owners(q);

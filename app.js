@@ -252,6 +252,239 @@ async function loadAlphaChart() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  OVERVIEW SEARCH
+// ════════════════════════════════════════════════════════════════════════════
+
+const ovSearch = {
+  q: '',
+  page: 1,
+  fName: '',
+  fKu: '',
+};
+let _ovTimer = null;
+let ovSearchController = null;
+
+function onOverviewSearchInput(val) {
+  ovSearch.q = val;
+  ovSearch.page = 1;
+  ovSearch.fName = '';
+  ovSearch.fKu = '';
+  clearTimeout(_ovTimer);
+  _ovTimer = setTimeout(() => loadOverviewSearch(1), 280);
+}
+
+function onOverviewSearchKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    clearTimeout(_ovTimer);
+    loadOverviewSearch(1);
+  }
+  if (e.key === 'Escape') clearOverviewSearch();
+}
+
+function clearOverviewSearch() {
+  const input = document.getElementById('overview-search');
+  if (input) input.value = '';
+  ovSearch.q = '';
+  ovSearch.page = 1;
+  ovSearch.fName = '';
+  ovSearch.fKu = '';
+  const card = document.getElementById('overview-search-card');
+  if (card) card.hidden = true;
+}
+
+function filterOverviewName(name) {
+  ovSearch.fName = name;
+  ovSearch.fKu = '';
+  loadOverviewSearch(1);
+}
+
+function filterOverviewPlace(ku) {
+  ovSearch.fKu = ku;
+  ovSearch.fName = '';
+  loadOverviewSearch(1);
+}
+
+function openOverviewInOwners(name, ku) {
+  const n = name || ovSearch.fName || ovSearch.q || '';
+  const k = ku || ovSearch.fKu || '';
+  const nameEl = document.getElementById('owner-search');
+  const kuEl = document.getElementById('owner-ku-filter');
+  if (nameEl) nameEl.value = n;
+  if (kuEl) kuEl.value = k;
+  ownerState.colFilters.name = n;
+  ownerState.colFilters.ku = k;
+  showTab('owners');
+  loadOwners(1);
+}
+
+async function loadOverviewSearch(page = 1) {
+  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+  ovSearch.q = q;
+  ovSearch.page = page;
+  const card = document.getElementById('overview-search-card');
+  if (!card) return;
+
+  if (q.length < 2) {
+    card.hidden = true;
+    return;
+  }
+
+  card.hidden = false;
+  document.getElementById('overview-search-label').textContent = `„${q}”`;
+  const tableWrap = document.getElementById('overview-search-table');
+  const countsWrap = document.getElementById('overview-search-counts');
+  tableWrap.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div>Hľadám v registri...</div>';
+
+  if (ovSearchController) ovSearchController.abort();
+  ovSearchController = new AbortController();
+  const signal = ovSearchController.signal;
+
+  const params = new URLSearchParams({
+    q,
+    page,
+    limit: 50,
+    f_name: ovSearch.fName,
+    f_ku: ovSearch.fKu,
+  });
+
+  try {
+    const data = await apiFetch(`/overview-search?${params}`, { signal }).then((r) => r.json());
+    if (data.error) throw new Error(data.error);
+
+    countsWrap.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-label">Záznamy</div>
+        <div class="stat-value">${fmt(data.total)}</div>
+        <div class="stat-sub">zhody v registri</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unikátne mená</div>
+        <div class="stat-value">${fmt(data.unique_names)}</div>
+        <div class="stat-sub">rôznych vlastníkov</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Obce / k.ú.</div>
+        <div class="stat-value">${fmt(data.unique_places)}</div>
+        <div class="stat-sub">unikátnych území</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unikátne LV</div>
+        <div class="stat-value">${fmt(data.unique_lv)}</div>
+        <div class="stat-sub">listy vlastníctva</div>
+      </div>`;
+
+    const namesWrap = document.getElementById('overview-names-wrap');
+    if (!data.names?.length) {
+      namesWrap.innerHTML = '<div class="empty-state">Žiadne mená</div>';
+    } else {
+      namesWrap.innerHTML = `
+        <table>
+          <thead><tr><th>Meno</th><th>Obce</th><th>LV</th><th>Záznamy</th></tr></thead>
+          <tbody>
+            ${data.names.map((r) => `
+              <tr class="ov-click-row" onclick="filterOverviewName('${esc(r.meno_vlastnika).replace(/'/g, "\\'")}')" title="Filtrovať toto meno">
+                <td><strong>${esc(r.meno_vlastnika)}</strong></td>
+                <td><span class="badge badge-blue">${fmt(r.places)}</span></td>
+                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
+                <td>${fmt(r.recs)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    const placesWrap = document.getElementById('overview-places-wrap');
+    if (!data.places?.length) {
+      placesWrap.innerHTML = '<div class="empty-state">Žiadne obce</div>';
+    } else {
+      placesWrap.innerHTML = `
+        <table>
+          <thead><tr><th>Obec / k.ú.</th><th>Číslo</th><th>Mená</th><th>LV</th><th>Záznamy</th></tr></thead>
+          <tbody>
+            ${data.places.map((r) => {
+              const safeKu = esc(r.katastralne_uzemie).replace(/'/g, "\\'");
+              return `
+              <tr class="ov-click-row" onclick="filterOverviewPlace('${safeKu}')" title="Filtrovať toto k.ú.">
+                <td><strong>${esc(r.katastralne_uzemie)}</strong></td>
+                <td>${fmt(r.poradove_cislo)}</td>
+                <td><span class="badge badge-blue">${fmt(r.names)}</span></td>
+                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
+                <td>${fmt(r.recs)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    window._overviewLvs = data.lvs || [];
+    const bulk = document.getElementById('overview-search-bulk');
+    const lvCount = data.lvs?.length || 0;
+    const more = data.unique_lv > lvCount ? ` z ${fmt(data.unique_lv)}` : '';
+    bulk.innerHTML = `
+      <div class="bulk-lv-bar">
+        <div>⚡ <strong>${fmt(data.total)}</strong> záznamov · <strong>${fmt(data.unique_names)}</strong> mien · <strong>${fmt(data.unique_places)}</strong> obcí · <strong>${lvCount}${more}</strong> LV</div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="bulk-lv-btn" onclick="window.openOverviewInOwners()">👥 Otvoriť v Neznámych vlastníkoch</button>
+          ${lvCount ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť ${lvCount} výpisov ↗</button>` : ''}
+        </div>
+      </div>`;
+
+    if (!data.rows?.length) {
+      tableWrap.innerHTML = '<div class="empty-state">Žiadne výsledky pre zadaný filter</div>';
+    } else {
+      tableWrap.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Katast. územie</th>
+              <th>Por. číslo</th>
+              <th>LV</th>
+              <th>Meno vlastníka</th>
+              <th>Kataster Výpis</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.rows.map((r) => `
+              <tr>
+                <td>${esc(r.katastralne_uzemie)}</td>
+                <td>${fmt(r.poradove_cislo)}</td>
+                <td>
+                  <span class="badge badge-amber badge-clickable"
+                        title="Otvoriť Kataster Portal (${esc(r.katastralne_uzemie)}, LV ${fmt(r.lv)})"
+                        onclick="window.openKatasterLV('${esc(r.katastralne_uzemie).replace(/'/g, "\\'")}', '${r.poradove_cislo}', '${r.lv}')">
+                    📄 LV ${fmt(r.lv)} ↗
+                  </span>
+                </td>
+                <td>${esc(r.meno_vlastnika)}</td>
+                <td>
+                  <a href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.poradove_cislo}&outputType=html"
+                     target="_blank" rel="noopener" class="btn-lv-link"
+                     title="Otvoriť priamy výpis z Katastra pre LV ${fmt(r.lv)} (${esc(r.katastralne_uzemie)})">
+                    📜 Výpis LV ${fmt(r.lv)} ↗
+                  </a>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    renderPagination('overview-search-pagination', page, data.total, 50, loadOverviewSearch);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    showToast('Chyba hľadania: ' + e.message, 'error');
+    tableWrap.innerHTML = `<div class="empty-state" style="color:#ef4444">❌ ${esc(e.message)}</div>`;
+  }
+}
+
+window.onOverviewSearchInput = onOverviewSearchInput;
+window.onOverviewSearchKeydown = onOverviewSearchKeydown;
+window.clearOverviewSearch = clearOverviewSearch;
+window.filterOverviewName = filterOverviewName;
+window.filterOverviewPlace = filterOverviewPlace;
+window.openOverviewInOwners = openOverviewInOwners;
+window.loadOverviewSearch = loadOverviewSearch;
+
+// ════════════════════════════════════════════════════════════════════════════
 //  OWNERS TAB
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -1965,6 +2198,13 @@ function renderMapChips(kuList) {
 }
 
 // ── Export all handlers to window object ───────────────────────────────────
+window.onOverviewSearchInput = onOverviewSearchInput;
+window.onOverviewSearchKeydown = onOverviewSearchKeydown;
+window.clearOverviewSearch = clearOverviewSearch;
+window.filterOverviewName = filterOverviewName;
+window.filterOverviewPlace = filterOverviewPlace;
+window.openOverviewInOwners = openOverviewInOwners;
+window.loadOverviewSearch = loadOverviewSearch;
 window.onOwnerTopInput = onOwnerTopInput;
 window.setOwnerColFilter = setOwnerColFilter;
 window.onTrTopInput = onTrTopInput;
