@@ -216,7 +216,6 @@ export async function initDb() {
   await registerParquet('lv_parcels.parquet', 'parcely LV', 88, 90);
 
   setStatus('Pripravujem tabuľky...');
-  await queryRun(`PRAGMA threads=4`);
   await queryRun(`CREATE OR REPLACE VIEW unknown_owners AS SELECT * FROM read_parquet('unknown_owners.parquet')`);
   await queryRun(`CREATE OR REPLACE VIEW transferred_rights AS SELECT * FROM read_parquet('transferred_rights.parquet')`);
   await queryRun(`CREATE OR REPLACE TABLE places_agg AS SELECT * FROM read_parquet('places_agg.parquet')`);
