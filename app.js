@@ -263,7 +263,81 @@ const ovSearch = {
   pickName: '',
   pickKu: '',
   names: [],
+  variantMap: {},
 };
+
+function cleanPersonName(raw) {
+  let t = String(raw || '').replace(/\u00a0/g, ' ');
+  t = t.replace(/\(SPF\)/gi, ' ');
+  t = t.replace(/\[SPF\]/gi, ' ');
+  t = t.replace(/\bSPF\b/gi, ' ');
+  t = t.replace(/\bUSA\b/g, ' ');
+  t = t.replace(/,?\s*\bSR\b/g, ' ');
+  t = t.replace(/pôv\.?\s*zápis/gi, ' ');
+  t = t.replace(/D:\([^)]*\)/gi, ' ');
+  t = t.replace(/D:[^\s,;|]*/gi, ' ');
+  t = t.replace(/\(ž[^)]*\)/gi, ' ');
+  t = t.replace(/\(m[.,][^)]*\)/gi, ' ');
+  const maiden = t.match(/\((r\.\s*[^),]+)\)/i);
+  const before = t.split('(')[0];
+  if (before.replace(/[^A-Za-zÁáÄäČčĎďÉéÍíĽľĹĺŇňÓóÔôŔŕŠšŤťÚúÝýŽž]/g, '').length >= 5) {
+    t = before;
+    if (maiden && !/r\./i.test(t)) t += ` ${maiden[1]}`;
+  }
+  t = t.replace(/(?:^|[\s,;])ž\s+\S+(?:\s+r\.\s+\S+)?/gi, ' ');
+  t = t.replace(/[,;|/]+/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/^[,\-\s]+|[,\-\s]+$/g, '');
+  return t || String(raw || '').trim();
+}
+
+function nameKey(s) {
+  return cleanPersonName(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function groupCleanNames(rows) {
+  const map = new Map();
+  for (const r of rows || []) {
+    const clean = cleanPersonName(r.meno_vlastnika);
+    const key = nameKey(clean);
+    if (!map.has(key)) {
+      map.set(key, {
+        ...r,
+        meno_vlastnika: clean,
+        variants: [r.meno_vlastnika],
+      });
+    } else {
+      const g = map.get(key);
+      if (!g.variants.includes(r.meno_vlastnika)) g.variants.push(r.meno_vlastnika);
+      g.recs = Number(g.recs || 0) + Number(r.recs || 0);
+      g.lvs = Number(g.lvs || 0) + Number(r.lvs || 0);
+      g.solo_lvs = Number(g.solo_lvs || 0) + Number(r.solo_lvs || 0);
+      g.portion = Math.round((Number(g.portion || 0) + Number(r.portion || 0)) * 100) / 100;
+      g.districts = Math.max(Number(g.districts || 0), Number(r.districts || 0));
+      if (Number(r.recs || 0) > Number(g.top_ku_recs || 0)) {
+        g.top_ku = r.top_ku;
+        g.top_ku_code = r.top_ku_code;
+        g.top_ku_recs = r.top_ku_recs;
+        g.top_ku_lvs = r.top_ku_lvs;
+        g.top_ku_solo = r.top_ku_solo;
+        g.top_ku_portion = r.top_ku_portion;
+      }
+      const tot = Number(g.recs || 0);
+      g.top_ku_pct = tot ? Math.round(100 * Number(g.top_ku_recs || 0) / tot) : 0;
+    }
+  }
+  const grouped = [...map.values()].sort((a, b) => Number(b.portion || 0) - Number(a.portion || 0) || Number(b.recs || 0) - Number(a.recs || 0));
+  ovSearch.variantMap = {};
+  for (const g of grouped) ovSearch.variantMap[g.meno_vlastnika] = g.variants;
+  return grouped;
+}
+
+function variantsFor(name) {
+  return ovSearch.variantMap[name] || [name];
+}
+
+function namesParam(name) {
+  return encodeURIComponent(JSON.stringify(variantsFor(name)));
+}
 let _ovTimer = null;
 let ovSearchController = null;
 
@@ -428,7 +502,7 @@ async function showNameDistricts(name) {
   box.hidden = false;
   box.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Počítam nárok v k.ú. pre ${esc(name)}…</div>`;
   try {
-    const data = await apiFetch(`/name-districts?name=${encodeURIComponent(name)}`).then((r) => r.json());
+    const data = await apiFetch(`/name-districts?names=${namesParam(name)}`).then((r) => r.json());
     const rows = data.rows || [];
     if (!rows.length) {
       box.innerHTML = `<div class="empty-state">Žiadny rozpis pre ${esc(name)}</div>`;
@@ -550,7 +624,7 @@ async function loadOverviewSearch(page = 1) {
         <div class="stat-sub">listy vlastníctva</div>
       </div>`;
 
-    ovSearch.names = data.names || [];
+    ovSearch.names = groupCleanNames(data.names || []);
     fillNameSelect(ovSearch.names);
     if (!data.names?.length) {
       namesWrap.innerHTML = '<div class="empty-state">Žiadne mená</div>';
@@ -570,7 +644,7 @@ async function loadOverviewSearch(page = 1) {
             </tr>
           </thead>
           <tbody>
-            ${data.names.map((r) => {
+            ${ovSearch.names.map((r) => {
               const safe = esc(r.meno_vlastnika).replace(/'/g, "\\'");
               const ch = nameChance(r);
               const pct = Number(r.top_ku_pct || 0);
@@ -643,7 +717,7 @@ function fillNameSelect(names) {
   const current = ovSearch.pickName;
   sel.innerHTML = `<option value="">— vyber meno —</option>` + (names || []).map((r) => {
     const n = r.meno_vlastnika;
-    return `<option value="${esc(n).replace(/"/g, '&quot;')}">${esc(n)} (${fmt(r.recs)} · ${esc(r.top_ku || '')})</option>`;
+    return `<option value="${esc(n).replace(/"/g, '&quot;')}">${esc(n)}</option>`;
   }).join('');
   if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
 }
@@ -679,7 +753,7 @@ async function loadKuOptions(name, preferKu) {
   kuSel.disabled = true;
   kuSel.innerHTML = '<option value="">Načítavam k.ú.…</option>';
   try {
-    const data = await apiFetch(`/name-districts?name=${encodeURIComponent(name)}`).then((r) => r.json());
+    const data = await apiFetch(`/name-districts?names=${namesParam(name)}`).then((r) => r.json());
     const rows = data.rows || [];
     kuSel.innerHTML = `<option value="">— vyber k.ú. (${rows.length}) —</option>` + rows.map((r) => {
       const label = `${r.katastralne_uzemie} · ${fmt(r.lvs)} LV · podiel ${r.portion}`;
@@ -753,7 +827,7 @@ async function loadDossier(name, ku) {
   writeSearchUrl(ovSearch.q, name, ku);
   box.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Načítavam ${esc(name)} v ${esc(ku)}…</div>`;
   try {
-    const data = await apiFetch(`/name-ku-detail?name=${encodeURIComponent(name)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
+    const data = await apiFetch(`/name-ku-detail?names=${namesParam(name)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
     if (data.error) throw new Error(data.error);
     renderDossier(data);
   } catch (e) {
@@ -764,7 +838,7 @@ async function loadDossier(name, ku) {
 function renderDossier(data) {
   const box = document.getElementById('overview-dossier');
   if (!box) return;
-  const s = data.summary || {};
+  const s = { ...(data.summary || {}), name: ovSearch.pickName || data.summary?.name || '' };
   const lvs = data.lvs || [];
   const tr = data.transferred || [];
   const co = data.coowners || [];

@@ -496,9 +496,24 @@ async function overviewSearch(q) {
   };
 }
 
+function parseNameList(q) {
+  if (q.names) {
+    try {
+      const parsed = JSON.parse(q.names);
+      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+    } catch (_) { /* ignore */ }
+  }
+  if (q.name) return [String(q.name)];
+  return [];
+}
+
+function sqlNameIn(list) {
+  return list.map((n) => `'${escSql(n)}'`).join(', ');
+}
+
 async function nameDistricts(q) {
-  const name = (q.name || '').trim();
-  if (!name) return { name: '', rows: [] };
+  const list = parseNameList(q);
+  if (!list.length) return { name: '', rows: [] };
   const rows = await queryObjects(`
     WITH mine AS (
       SELECT u.katastralne_uzemie, u.poradove_cislo, u.lv,
@@ -506,7 +521,7 @@ async function nameDistricts(q) {
       FROM unknown_owners u
       LEFT JOIN lv_co c
         ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
-      WHERE u.meno_vlastnika = '${escSql(name)}'
+      WHERE u.meno_vlastnika IN (${sqlNameIn(list)})
     )
     SELECT
       katastralne_uzemie,
@@ -520,13 +535,14 @@ async function nameDistricts(q) {
     GROUP BY katastralne_uzemie
     ORDER BY portion DESC, recs DESC
   `);
-  return { name, rows };
+  return { name: list[0], rows };
 }
 
 async function nameKuDetail(q) {
-  const name = (q.name || '').trim();
+  const list = parseNameList(q);
+  const name = list[0] || (q.name || '').trim();
   const ku = (q.ku || '').trim();
-  if (!name || !ku) return { error: 'name and ku required' };
+  if (!list.length || !ku) return { error: 'name and ku required' };
 
   const lvs = await queryObjects(`
     WITH mine AS (
@@ -535,7 +551,7 @@ async function nameKuDetail(q) {
       FROM unknown_owners u
       LEFT JOIN lv_co c
         ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
-      WHERE u.meno_vlastnika = '${escSql(name)}'
+      WHERE u.meno_vlastnika IN (${sqlNameIn(list)})
         AND u.katastralne_uzemie = '${escSql(ku)}'
     )
     SELECT
@@ -591,7 +607,7 @@ async function nameKuDetail(q) {
         FROM unknown_owners
         WHERE poradove_cislo = ${Number(summary.cislo_ku)}
           AND lv IN (${lvList})
-          AND meno_vlastnika <> '${escSql(name)}'
+          AND meno_vlastnika NOT IN (${sqlNameIn(list)})
         GROUP BY meno_vlastnika
         ORDER BY shared_lvs DESC, meno_vlastnika
         LIMIT 25
