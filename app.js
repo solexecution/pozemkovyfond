@@ -394,6 +394,70 @@ function filterOverviewName(name) {
   loadOverviewSearch(1);
 }
 
+function nameChance(r) {
+  const solo = Number(r.solo_lvs || 0);
+  const pct = Number(r.top_ku_pct || 0);
+  const avg = Number(r.avg_co || 99);
+  const portion = Number(r.portion || 0);
+  if (solo >= 5 || (portion >= 3 && pct >= 70 && avg <= 2)) {
+    return { label: 'Vysoká', cls: 'badge-green' };
+  }
+  if (solo >= 1 || (pct >= 55 && avg <= 6) || portion >= 1.5) {
+    return { label: 'Stredná', cls: 'badge-amber' };
+  }
+  return { label: 'Nízka', cls: 'badge-blue' };
+}
+
+async function showNameDistricts(name) {
+  const box = document.getElementById('overview-name-districts');
+  if (!box) return;
+  ovSearch.fName = name;
+  box.hidden = false;
+  box.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Počítam nárok v k.ú. pre ${esc(name)}…</div>`;
+  try {
+    const data = await apiFetch(`/name-districts?name=${encodeURIComponent(name)}`).then((r) => r.json());
+    const rows = data.rows || [];
+    if (!rows.length) {
+      box.innerHTML = `<div class="empty-state">Žiadny rozpis pre ${esc(name)}</div>`;
+      return;
+    }
+    box.innerHTML = `
+      <div class="card-title" style="margin-bottom:.5rem">
+        Koľko pôdy v ktorom k.ú. — ${esc(name)}
+        <button class="btn btn-ghost" type="button" onclick="filterOverviewName('${esc(name).replace(/'/g, "\\'")}')">Filtrovať záznamy</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Katast. územie</th>
+              <th>Kód</th>
+              <th>Záznamy</th>
+              <th>LV</th>
+              <th>Solo LV</th>
+              <th>Ø spoluvlastníkov</th>
+              <th>Odhad podielu</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr class="ov-click-row" onclick="filterOverviewPlace('${esc(r.katastralne_uzemie).replace(/'/g, "\\'")}')">
+                <td><strong>${esc(r.katastralne_uzemie)}</strong></td>
+                <td>${fmt(r.poradove_cislo)}</td>
+                <td>${fmt(r.recs)}</td>
+                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
+                <td><span class="badge badge-green">${fmt(r.solo_lvs)}</span></td>
+                <td>${r.avg_co ?? '—'}</td>
+                <td><strong>${r.portion ?? '—'}</strong></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
+  }
+}
+
 function filterOverviewPlace(ku) {
   ovSearch.fKu = ku;
   ovSearch.fName = '';
@@ -479,15 +543,38 @@ async function loadOverviewSearch(page = 1) {
     } else {
       namesWrap.innerHTML = `
         <table>
-          <thead><tr><th>Meno</th><th>Obce</th><th>LV</th><th>Záznamy</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Meno</th>
+              <th>Záznamy</th>
+              <th>LV</th>
+              <th>Hlavné k.ú.</th>
+              <th>V k.ú.</th>
+              <th>Odhad podielu</th>
+              <th>Solo LV</th>
+              <th>Šanca (väčší kus)</th>
+            </tr>
+          </thead>
           <tbody>
-            ${data.names.map((r) => `
-              <tr class="ov-click-row" onclick="filterOverviewName('${esc(r.meno_vlastnika).replace(/'/g, "\\'")}')" title="Filtrovať toto meno">
+            ${data.names.map((r) => {
+              const safe = esc(r.meno_vlastnika).replace(/'/g, "\\'");
+              const ch = nameChance(r);
+              const pct = Number(r.top_ku_pct || 0);
+              return `
+              <tr class="ov-click-row" onclick="showNameDistricts('${safe}')" title="Rozpis podľa k.ú.">
                 <td><strong>${esc(r.meno_vlastnika)}</strong></td>
-                <td><span class="badge badge-blue">${fmt(r.places)}</span></td>
-                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
                 <td>${fmt(r.recs)}</td>
-              </tr>`).join('')}
+                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
+                <td>${esc(r.top_ku || '—')}</td>
+                <td>${fmt(r.top_ku_lvs)} LV · ${pct}%</td>
+                <td title="Súčet 1/N neznámych na LV"><strong>${r.portion ?? '—'}</strong></td>
+                <td><span class="badge badge-green">${fmt(r.solo_lvs)}</span></td>
+                <td>
+                  <span class="badge ${ch.cls}">${ch.label}</span>
+                  <div class="chance-bar" title="Koncentrácia v hlavnom k.ú. ${pct}%"><span style="width:${Math.min(100, pct)}%"></span></div>
+                </td>
+              </tr>`;
+            }).join('')}
           </tbody>
         </table>`;
     }
@@ -585,6 +672,7 @@ window.onOverviewSearchInput = onOverviewSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
+window.showNameDistricts = showNameDistricts;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
@@ -2310,6 +2398,7 @@ window.onOverviewSearchInput = onOverviewSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
+window.showNameDistricts = showNameDistricts;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;

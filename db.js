@@ -4,7 +4,7 @@
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
 import { parseLvText } from './lv_parser.js';
 
-const DATA_CACHE = 'pzf-data-v4';
+const DATA_CACHE = 'pzf-data-v5';
 
 let db = null;
 let conn = null;
@@ -208,7 +208,8 @@ export async function initDb() {
 
   await registerParquet('places_agg.parquet', 'obce', 8, 12);
   await registerParquet('surnames.parquet', 'index mien', 12, 16);
-  await registerParquet('unknown_owners.parquet', 'register (cache po 1. načítaní)', 16, 78);
+  await registerParquet('lv_co.parquet', 'hustota LV', 16, 20);
+  await registerParquet('unknown_owners.parquet', 'register (cache po 1. načítaní)', 20, 78);
   await registerParquet('transferred_rights.parquet', 'prevedené práva', 78, 84);
   await registerParquet('lv_details.parquet', 'uložené LV', 84, 86);
   await registerParquet('lv_owners.parquet', 'vlastníkov LV', 86, 88);
@@ -220,9 +221,11 @@ export async function initDb() {
   await queryRun(`CREATE OR REPLACE VIEW transferred_rights AS SELECT * FROM read_parquet('transferred_rights.parquet')`);
   await queryRun(`CREATE OR REPLACE TABLE places_agg AS SELECT * FROM read_parquet('places_agg.parquet')`);
   await queryRun(`CREATE OR REPLACE TABLE surnames AS SELECT * FROM read_parquet('surnames.parquet')`);
+  await queryRun(`CREATE OR REPLACE TABLE lv_co AS SELECT * FROM read_parquet('lv_co.parquet')`);
   try {
     await queryRun(`CREATE INDEX idx_surnames_token ON surnames(token)`);
     await queryRun(`CREATE INDEX idx_places_ku ON places_agg(ku_norm)`);
+    await queryRun(`CREATE INDEX idx_lv_co ON lv_co(poradove_cislo, lv)`);
   } catch (_) { /* older wasm may skip */ }
 
   await queryRun(`
@@ -414,11 +417,57 @@ async function overviewSearch(q) {
   const where = `WHERE ${nameConds.join(' AND ')}`;
 
   const names = await queryObjects(`
-    SELECT meno_vlastnika, COUNT(*) AS recs,
-           COUNT(DISTINCT katastralne_uzemie) AS places, COUNT(DISTINCT lv) AS lvs
-    FROM unknown_owners ${where}
-    GROUP BY meno_vlastnika
-    ORDER BY recs DESC
+    WITH mine AS (
+      SELECT u.meno_vlastnika, u.katastralne_uzemie, u.poradove_cislo, u.lv,
+             COALESCE(c.names_on_lv, 1) AS names_on_lv
+      FROM unknown_owners u
+      LEFT JOIN lv_co c
+        ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
+      ${where}
+    ),
+    by_ku AS (
+      SELECT
+        meno_vlastnika,
+        katastralne_uzemie,
+        ANY_VALUE(poradove_cislo) AS poradove_cislo,
+        COUNT(*) AS recs,
+        COUNT(DISTINCT lv) AS lvs,
+        SUM(CASE WHEN names_on_lv <= 1 THEN 1 ELSE 0 END) AS solo_lvs,
+        AVG(names_on_lv) AS avg_co,
+        SUM(1.0 / GREATEST(names_on_lv, 1)) AS portion
+      FROM mine
+      GROUP BY meno_vlastnika, katastralne_uzemie
+    ),
+    tot AS (
+      SELECT meno_vlastnika,
+             SUM(recs) AS recs, SUM(lvs) AS lvs, COUNT(*) AS districts,
+             SUM(solo_lvs) AS solo_lvs, SUM(portion) AS portion, AVG(avg_co) AS avg_co
+      FROM by_ku
+      GROUP BY meno_vlastnika
+    ),
+    topku AS (
+      SELECT meno_vlastnika, katastralne_uzemie, poradove_cislo, recs, lvs, solo_lvs, portion
+      FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY meno_vlastnika ORDER BY recs DESC, lvs DESC) AS rn
+        FROM by_ku
+      )
+      WHERE rn = 1
+    )
+    SELECT
+      t.meno_vlastnika,
+      t.recs, t.lvs, t.districts, t.solo_lvs,
+      ROUND(t.portion, 2) AS portion,
+      ROUND(t.avg_co, 1) AS avg_co,
+      k.katastralne_uzemie AS top_ku,
+      k.poradove_cislo AS top_ku_code,
+      k.recs AS top_ku_recs,
+      k.lvs AS top_ku_lvs,
+      k.solo_lvs AS top_ku_solo,
+      ROUND(k.portion, 2) AS top_ku_portion,
+      ROUND(100.0 * k.recs / NULLIF(t.recs, 0), 0) AS top_ku_pct
+    FROM tot t
+    JOIN topku k ON t.meno_vlastnika = k.meno_vlastnika
+    ORDER BY t.portion DESC, t.recs DESC
     LIMIT 40
   `);
 
@@ -446,6 +495,33 @@ async function overviewSearch(q) {
     page,
     limit,
   };
+}
+
+async function nameDistricts(q) {
+  const name = (q.name || '').trim();
+  if (!name) return { name: '', rows: [] };
+  const rows = await queryObjects(`
+    WITH mine AS (
+      SELECT u.katastralne_uzemie, u.poradove_cislo, u.lv,
+             COALESCE(c.names_on_lv, 1) AS names_on_lv
+      FROM unknown_owners u
+      LEFT JOIN lv_co c
+        ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
+      WHERE u.meno_vlastnika = '${escSql(name)}'
+    )
+    SELECT
+      katastralne_uzemie,
+      ANY_VALUE(poradove_cislo) AS poradove_cislo,
+      COUNT(*) AS recs,
+      COUNT(DISTINCT lv) AS lvs,
+      SUM(CASE WHEN names_on_lv <= 1 THEN 1 ELSE 0 END) AS solo_lvs,
+      ROUND(AVG(names_on_lv), 1) AS avg_co,
+      ROUND(SUM(1.0 / GREATEST(names_on_lv, 1)), 2) AS portion
+    FROM mine
+    GROUP BY katastralne_uzemie
+    ORDER BY portion DESC, recs DESC
+  `);
+  return { name, rows };
 }
 
 async function owners(q) {
@@ -877,6 +953,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'overview-search':
       result = await overviewSearch(q);
+      break;
+    case 'name-districts':
+      result = await nameDistricts(q);
       break;
     case 'owners':
       result = await owners(q);

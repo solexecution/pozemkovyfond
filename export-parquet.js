@@ -72,6 +72,16 @@ async function main() {
 
   await conn.run(`
     COPY (
+      SELECT poradove_cislo, lv, COUNT(DISTINCT meno_vlastnika) AS names_on_lv
+      FROM unknown_owners
+      GROUP BY 1, 2
+    ) TO '${OUT_DIR}/lv_co.parquet'
+    (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 22)
+  `);
+  console.log(`lv_co.parquet  ${mb(path.join(__dirname, 'data', 'lv_co.parquet'))} MB`);
+
+  await conn.run(`
+    COPY (
       SELECT
         katastralne_uzemie,
         poradove_cislo,

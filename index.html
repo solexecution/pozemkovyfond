@@ -105,15 +105,19 @@
         <span id="overview-search-label"></span>
       </div>
       <div class="stat-grid ov-search-stats" id="overview-search-counts"></div>
-      <div class="grid-2" style="margin:1.25rem 0">
-        <div>
-          <div class="card-title" style="margin-bottom:.75rem">Unikátne mená</div>
-          <div class="table-wrap" id="overview-names-wrap"></div>
-        </div>
-        <div>
-          <div class="card-title" style="margin-bottom:.75rem">Obce / katast. územia</div>
-          <div class="table-wrap" id="overview-places-wrap"></div>
-        </div>
+      <div style="margin:1.25rem 0">
+        <div class="card-title" style="margin-bottom:.35rem">Unikátne mená — nárok podľa k.ú.</div>
+        <p class="insight-note">
+          Odhad podielu = súčet 1/N na každom LV (N = koľko neznámych je na tom liste).
+          Solo LV = jediný neznámy vlastník. Šanca = koncentrácia v jednom k.ú. + málo spoluvlastníkov (väčší kus pôdy).
+          Nie je to výmera z katastra.
+        </p>
+        <div class="table-wrap" id="overview-names-wrap"></div>
+        <div id="overview-name-districts" hidden></div>
+      </div>
+      <div style="margin:1.25rem 0">
+        <div class="card-title" style="margin-bottom:.75rem">Obce / katast. územia</div>
+        <div class="table-wrap" id="overview-places-wrap"></div>
       </div>
       <div id="overview-search-bulk"></div>
       <div class="table-wrap" id="overview-search-table"></div>

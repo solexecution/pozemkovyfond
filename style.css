@@ -332,6 +332,31 @@ body {
 .ov-search-stats .stat-sub { color: var(--text-muted); }
 .ov-click-row { cursor: pointer; }
 .ov-click-row:hover { background: var(--bg-card-hover); }
+.insight-note {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin: 0 0 0.75rem;
+}
+.chance-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: #252a38;
+  overflow: hidden;
+  min-width: 56px;
+}
+.chance-bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #10b981);
+}
+#overview-name-districts {
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
 [hidden] { display: none !important; }
 .stat-grid {
   display: grid;
