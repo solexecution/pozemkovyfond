@@ -48,6 +48,95 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+function cellSortKey(td) {
+  const raw = (td?.innerText || td?.textContent || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw || raw === '—' || raw === '-') return { empty: true, n: 0, s: '' };
+  const lv = raw.match(/LV\s+([\d ]+)/i);
+  if (lv) return { n: Number(lv[1].replace(/\s/g, '')), s: '' };
+  const stripped = raw.replace(/[^\d,.\s-]/g, '').replace(/\s/g, '').replace(',', '.');
+  const leftover = raw.replace(/[\d\s.,%\-–]/g, '').replace(/m²|ha|LV|↗|📄|📜/gi, '').trim();
+  if (stripped && /^-?\d+(\.\d+)?$/.test(stripped) && leftover.length <= 3) {
+    return { n: Number(stripped), s: '' };
+  }
+  return {
+    n: 0,
+    s: raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(),
+  };
+}
+
+function sortTableByColumn(table, colIdx, th) {
+  const tbody = table.querySelector('tbody');
+  if (!tbody) return;
+  const dir = th.dataset.sortDir === 'ASC' ? 'DESC' : 'ASC';
+  th.parentElement.querySelectorAll('th').forEach((h) => {
+    h.classList.remove('sort-active');
+    const ic = h.querySelector('.sort-ic');
+    if (ic) ic.textContent = '↕';
+    delete h.dataset.sortDir;
+  });
+  th.classList.add('sort-active');
+  th.dataset.sortDir = dir;
+  const ic = th.querySelector('.sort-ic');
+  if (ic) ic.textContent = dir === 'ASC' ? '↑' : '↓';
+  const mul = dir === 'ASC' ? 1 : -1;
+  const rows = [...tbody.querySelectorAll(':scope > tr')];
+  rows.sort((a, b) => {
+    const ka = cellSortKey(a.cells[colIdx]);
+    const kb = cellSortKey(b.cells[colIdx]);
+    if (ka.empty && !kb.empty) return 1;
+    if (kb.empty && !ka.empty) return -1;
+    if (ka.s || kb.s) return ka.s.localeCompare(kb.s, 'sk', { sensitivity: 'base' }) * mul;
+    if (ka.n !== kb.n) return (ka.n - kb.n) * mul;
+    return 0;
+  });
+  const frag = document.createDocumentFragment();
+  rows.forEach((r) => frag.appendChild(r));
+  tbody.appendChild(frag);
+}
+
+function decorateTableHeaders(table) {
+  if (!table || table.tagName !== 'TABLE') return;
+  const headerRow = table.querySelector('thead tr:first-child');
+  if (!headerRow) return;
+  headerRow.querySelectorAll('th').forEach((th) => {
+    if (th.classList.contains('filter-cell') || th.querySelector('input, button, select')) return;
+    if (th.hasAttribute('onclick')) return;
+    const label = (th.textContent || '').replace(/[↕↑↓]/g, '').trim();
+    if (!label || label === '#') return;
+    th.classList.add('sortable');
+    th.dataset.domSort = '1';
+    if (!th.querySelector('.sort-ic')) {
+      th.insertAdjacentHTML('beforeend', '<span class="sort-ic">↕</span>');
+    }
+  });
+}
+
+function installTableSortObserver() {
+  if (window._tableSortReady) return;
+  window._tableSortReady = true;
+  document.addEventListener('click', (e) => {
+    const th = e.target.closest('th.sortable[data-dom-sort]');
+    if (!th) return;
+    if (e.target.closest('input, button, a, select')) return;
+    const table = th.closest('table');
+    if (!table) return;
+    const idx = [...th.parentElement.children].indexOf(th);
+    sortTableByColumn(table, idx, th);
+  });
+  const scan = (root) => {
+    if (!root || root.nodeType !== 1) return;
+    if (root.matches?.('table')) decorateTableHeaders(root);
+    root.querySelectorAll?.('table').forEach(decorateTableHeaders);
+  };
+  scan(document);
+  new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) scan(n);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+}
+installTableSortObserver();
+
 function showToast(msg, type = 'info') {
   const t = document.getElementById('toast');
   if (!t) return;
@@ -1036,7 +1125,17 @@ window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
 window.sortOverviewNames = sortOverviewNames;
 
-const soloState = { page: 1, ku: '' };
+const soloState = { page: 1, ku: '', sortCol: 'katastralne_uzemie', sortDir: 'ASC' };
+
+function sortSoloLvs(col) {
+  if (soloState.sortCol === col) {
+    soloState.sortDir = soloState.sortDir === 'ASC' ? 'DESC' : 'ASC';
+  } else {
+    soloState.sortCol = col;
+    soloState.sortDir = (col === 'meno_vlastnika' || col === 'katastralne_uzemie') ? 'ASC' : 'DESC';
+  }
+  loadSoloLvs(1);
+}
 let _soloTimer = null;
 
 function onSoloKuInput(val) {
@@ -1062,6 +1161,8 @@ async function loadSoloLvs(page = 1) {
     page,
     limit: 50,
     ku: soloState.ku || document.getElementById('solo-ku-filter')?.value || '',
+    sort_col: soloState.sortCol,
+    sort_dir: soloState.sortDir,
   });
   try {
     const data = await apiFetch(`/solo-lvs?${params}`).then((r) => r.json());
@@ -1085,16 +1186,21 @@ async function loadSoloLvs(page = 1) {
       renderPagination('solo-pagination', page, data.total, 50, loadSoloLvs);
       return;
     }
+    const sTh = (label, col) => {
+      const active = soloState.sortCol === col;
+      const icon = active ? (soloState.sortDir === 'ASC' ? '↑' : '↓') : '↕';
+      return `<th class="sortable${active ? ' sort-active' : ''}" onclick="event.stopPropagation(); sortSoloLvs('${col}')">${label}<span class="sort-ic">${icon}</span></th>`;
+    };
     wrap.innerHTML = `
       <table>
         <thead>
           <tr>
-            <th>Meno</th>
-            <th>k.ú.</th>
-            <th>Kód</th>
-            <th>LV</th>
-            <th>Odhad podielu</th>
-            <th>Kataster</th>
+            ${sTh('Meno', 'meno_vlastnika')}
+            ${sTh('k.ú.', 'katastralne_uzemie')}
+            ${sTh('Kód', 'cislo_ku')}
+            ${sTh('LV', 'lv')}
+            ${sTh('Odhad podielu', 'portion')}
+            ${sTh('Kataster', 'kataster')}
           </tr>
         </thead>
         <tbody>
@@ -1124,6 +1230,7 @@ async function loadSoloLvs(page = 1) {
 window.onSoloKuInput = onSoloKuInput;
 window.clearSoloFilter = clearSoloFilter;
 window.loadSoloLvs = loadSoloLvs;
+window.sortSoloLvs = sortSoloLvs;
 
 // ════════════════════════════════════════════════════════════════════════════
 //  OWNERS TAB
@@ -1601,7 +1708,7 @@ function renderOwnerTable(rows, focusInfo) {
           ${sTh('Por. číslo', 'poradove_cislo')}
           ${sTh('LV', 'lv')}
           ${sTh('Meno vlastníka', 'meno_vlastnika')}
-          <th>Kataster Výpis</th>
+          ${sTh('Kataster Výpis', 'lv')}
         </tr>
         <tr class="filter-row">
           <th></th>
@@ -1872,9 +1979,9 @@ function renderTrTable(rows, focusInfo) {
           ${sTh('Vlastník podľa LV', 'vlastnik_lv')}
           ${sTh('Číslo k.ú.', 'cislo_ku')}
           ${sTh('Názov k.ú.', 'nazov_ku')}
-          <th>CRZ</th>
+          ${sTh('CRZ', 'crz')}
           ${sTh('Dátum účinnosti', 'datum_ucinnosti')}
-          <th>Kataster Výpis</th>
+          ${sTh('Kataster Výpis', 'lv')}
         </tr>
         <tr class="filter-row">
           ${fTh('year',    'Rok...')}
@@ -2856,6 +2963,7 @@ window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
 window.sortOverviewNames = sortOverviewNames;
 window.loadSoloLvs = loadSoloLvs;
+window.sortSoloLvs = sortSoloLvs;
 window.onSoloKuInput = onSoloKuInput;
 window.clearSoloFilter = clearSoloFilter;
 window.onOwnerTopInput = onOwnerTopInput;

@@ -630,12 +630,25 @@ async function soloLvs(q) {
   const offset = (page - 1) * limit;
   const ku = normStr(q.ku || q.f_ku || '');
   const where = ku ? `WHERE contains(ku_norm, '${ku}')` : '';
+  const SOLO_SORT = {
+    meno_vlastnika: 'meno_norm',
+    katastralne_uzemie: 'katastralne_uzemie',
+    cislo_ku: 'cislo_ku',
+    lv: 'lv',
+    portion: 'lv',
+    kataster: 'lv',
+  };
+  const sortCol = SOLO_SORT[q.sort_col] || 'katastralne_uzemie';
+  const sortDir = q.sort_dir === 'DESC' ? 'DESC' : 'ASC';
+  const order = sortCol === 'lv'
+    ? `lv ${sortDir}`
+    : `${sortCol} ${sortDir}, lv ${sortDir}`;
 
   const cntRow = await queryObjects(`SELECT COUNT(*) AS cnt FROM solo_lvs ${where}`);
   const rows = await queryObjects(`
     SELECT meno_vlastnika, katastralne_uzemie, cislo_ku, lv
     FROM solo_lvs ${where}
-    ORDER BY katastralne_uzemie, lv
+    ORDER BY ${order}
     LIMIT ${limit} OFFSET ${offset}
   `);
   return { total: cntRow[0].cnt, page, limit, rows };
@@ -711,6 +724,7 @@ async function transferred(q) {
     cislo_ku: 'cislo_ku',
     nazov_ku: 'nazov_ku',
     datum_ucinnosti: 'datum_ucinnosti',
+    crz: 'crz',
   };
   const sortCol = ALLOWED[q.sort_col] || 'year';
   const sortDir = q.sort_dir === 'ASC' ? 'ASC' : 'DESC';
