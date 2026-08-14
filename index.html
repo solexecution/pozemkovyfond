@@ -81,7 +81,7 @@
         <form class="hero-search" id="overview-search-form" onsubmit="submitOverviewSearch(event)">
           <div class="hero-search-field">
             <input type="search" class="search-input" id="overview-search"
-                   placeholder="Meno alebo obec / k.ú."
+                   placeholder="Meno alebo obec — Košč Ján = kosc jan"
                    enterkeyhint="search" inputmode="search"
                    autocomplete="off" autocorrect="off" spellcheck="false"
                    oninput="onOverviewSearchInput(this.value)"
@@ -218,6 +218,13 @@
       </p>
       <div class="search-bar">
         <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="solo-name-filter"
+                 placeholder="Meno (Košč Ján = kosc jan)…"
+                 oninput="onSoloNameInput(this.value)"
+                 enterkeyhint="search">
+        </div>
+        <div class="search-input-wrap">
           <span class="search-icon">📍</span>
           <input type="text" class="search-input" id="solo-ku-filter"
                  placeholder="Filter k.ú. (napr. Stráňany, Sulín)…"
@@ -241,7 +248,7 @@
       <div class="search-bar">
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
-          <input type="text" class="search-input" id="owner-search" placeholder="Hľadaj meno vlastníka..." oninput="onOwnerTopInput('name', this.value)">
+          <input type="text" class="search-input" id="owner-search" placeholder="Hľadaj meno (Košč = kosc)..." oninput="onOwnerTopInput('name', this.value)">
         </div>
         <div class="search-input-wrap" style="max-width:220px">
           <span class="search-icon">📍</span>

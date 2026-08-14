@@ -133,12 +133,50 @@ async function queryRun(sql) {
   await conn.query(sql);
 }
 
-function normStr(s) {
-  return (s || '')
+const SK_FOLD = {
+  á: 'a', ä: 'a', č: 'c', ď: 'd', é: 'e', í: 'i', ĺ: 'l', ľ: 'l',
+  ň: 'n', ó: 'o', ô: 'o', ŕ: 'r', š: 's', ť: 't', ú: 'u', ý: 'y', ž: 'z',
+  ě: 'e', ů: 'u', ł: 'l', ą: 'a', ę: 'e', ó: 'o',
+};
+
+function fold(s) {
+  return String(s || '')
+    .replace(/[áäčďéěíĺľłňóôŕšťúůýžąę]/gi, (ch) => SK_FOLD[ch.toLowerCase()] || ch)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/'/g, "''");
+    .toLowerCase();
+}
+
+function normStr(s) {
+  return fold(s).replace(/'/g, "''");
+}
+
+function tokensOf(s) {
+  return fold(s).split(/[^a-z0-9]+/).filter((t) => t.length >= 1);
+}
+
+function tokenPred(col, q, opts = {}) {
+  const toks = tokensOf(q);
+  if (!toks.length) return '';
+  const prefixFirst = opts.prefixFirst !== false && toks[0].length >= 2;
+  return toks.map((t, i) => {
+    const esc = t.replace(/'/g, "''");
+    if (prefixFirst && i === 0) return prefixPred(col, esc);
+    return `contains(${col}, '${esc}')`;
+  }).join(' AND ');
+}
+
+function foldedNamePred(rawList) {
+  const raw = (rawList || []).map(String).filter(Boolean);
+  const folded = [...new Set(raw.map((n) => fold(n).replace(/'/g, "''")).filter(Boolean))];
+  const parts = [];
+  if (raw.length) parts.push(`meno_vlastnika IN (${raw.map((n) => `'${escSql(n)}'`).join(', ')})`);
+  if (folded.length) {
+    const norms = folded.map((f) => `'${f}'`).join(', ');
+    parts.push(`meno_norm IN (${norms})`);
+    parts.push(folded.map((f) => `(meno_norm LIKE '${f} %' OR meno_norm LIKE '${f},%')`).join(' OR '));
+  }
+  return parts.length ? `(${parts.join(' OR ')})` : '1=0';
 }
 
 function escSql(s) {
@@ -150,9 +188,9 @@ function normSql(col) {
 }
 
 function buildTokenWhere(col, searchName) {
-  const tokens = normStr(searchName).split(/\s+/).filter(Boolean);
-  if (!tokens.length) return '1=1';
-  return tokens.map((t) => `${normSql(col)} LIKE '%${t}%'`).join(' AND ');
+  const toks = tokensOf(searchName);
+  if (!toks.length) return '1=1';
+  return toks.map((t) => `${normSql(col)} LIKE '%${t.replace(/'/g, "''")}%'`).join(' AND ');
 }
 
 function throwIfAborted(signal) {
@@ -371,52 +409,54 @@ async function stats() {
 }
 
 function bothWhere(q) {
-  const tokens = normStr(q).split(/\s+/).filter((t) => t.length >= 2);
-  if (!tokens.length) return '';
-  const first = tokens[0];
-  const rest = tokens.slice(1);
-  const nameFast = [prefixPred('meno_norm', first), ...rest.map((t) => `contains(meno_norm, '${t}')`)].join(' AND ');
-  const placePred = tokens.map((t) => `contains(ku_norm, '${t}')`).join(' AND ');
+  const nameFast = tokenPred('meno_norm', q);
+  const placePred = tokenPred('ku_norm', q, { prefixFirst: false });
+  if (!nameFast && !placePred) return '';
+  if (!placePred) return `(${nameFast})`;
+  if (!nameFast) return `(${placePred})`;
   return `((${nameFast}) OR (${placePred}))`;
 }
 
 async function overviewSearch(q) {
   const raw = (q.q || '').trim();
-  if (raw.length < 2) {
+  if (fold(raw).replace(/[^a-z0-9]/g, '').length < 2) {
     return { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0, names: [], places: [], rows: [], lvs: [], page: 1, limit: 50 };
   }
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
   const offset = (page - 1) * limit;
   const fName = (q.f_name || '').trim();
-  const fKu = normStr(q.f_ku || '');
-  const tokens = normStr(raw).split(/\s+/).filter((t) => t.length >= 2);
-  const first = tokens[0] || normStr(raw);
+  const fKu = q.f_ku || '';
+  const tokens = tokensOf(raw);
+  const first = tokens[0] || fold(raw);
 
-  const places = await queryObjects(`
+  const placeWhere = tokenPred('ku_norm', raw, { prefixFirst: false });
+  const places = placeWhere ? await queryObjects(`
     SELECT katastralne_uzemie, poradove_cislo, recs, names, lvs
     FROM places_agg
-    WHERE ${prefixPred('ku_norm', first)}
-       ${tokens.slice(1).map((t) => `AND contains(ku_norm, '${t}')`).join(' ')}
+    WHERE ${placeWhere}
     ORDER BY recs DESC
     LIMIT 40
-  `);
+  `) : [];
 
-  const surname = (await queryObjects(`
+  const surname = first ? ((await queryObjects(`
     SELECT
       COALESCE(SUM(recs), 0) AS total,
       COALESCE(SUM(names), 0) AS unique_names,
       COALESCE(SUM(places), 0) AS unique_places,
       COALESCE(SUM(lvs), 0) AS unique_lv
     FROM surnames
-    WHERE ${prefixPred('token', first)}
-  `))[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
+    WHERE ${prefixPred('token', first.replace(/'/g, "''"))}
+  `))[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 })
+    : { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
 
-  const nameConds = [prefixPred('meno_norm', first)];
-  tokens.slice(1).forEach((t) => nameConds.push(`contains(meno_norm, '${t}')`));
-  if (fName) nameConds.push(`meno_vlastnika = '${escSql(fName)}'`);
-  if (fKu) nameConds.push(`contains(ku_norm, '${fKu}')`);
-  const where = `WHERE ${nameConds.join(' AND ')}`;
+  const nameConds = [];
+  const namePred = tokenPred('meno_norm', raw);
+  if (namePred) nameConds.push(namePred);
+  if (fName) nameConds.push(foldedNamePred([fName]));
+  const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
+  if (kuPred) nameConds.push(kuPred);
+  const where = nameConds.length ? `WHERE ${nameConds.join(' AND ')}` : 'WHERE 1=0';
 
   const names = await queryObjects(`
     WITH mine AS (
@@ -524,7 +564,7 @@ async function nameDistricts(q) {
       FROM unknown_owners u
       LEFT JOIN lv_co c
         ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
-      WHERE u.meno_vlastnika IN (${sqlNameIn(list)})
+      WHERE ${foldedNamePred(list)}
     )
     SELECT
       katastralne_uzemie,
@@ -554,8 +594,8 @@ async function nameKuDetail(q) {
       FROM unknown_owners u
       LEFT JOIN lv_co c
         ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
-      WHERE u.meno_vlastnika IN (${sqlNameIn(list)})
-        AND u.katastralne_uzemie = '${escSql(ku)}'
+      WHERE ${foldedNamePred(list)}
+        AND (u.katastralne_uzemie = '${escSql(ku)}' OR u.ku_norm = '${normStr(ku)}')
     )
     SELECT
       lv,
@@ -613,7 +653,7 @@ async function nameKuDetail(q) {
         FROM unknown_owners
         WHERE poradove_cislo = ${Number(summary.cislo_ku)}
           AND lv IN (${lvList})
-          AND meno_vlastnika NOT IN (${sqlNameIn(list)})
+          AND NOT ${foldedNamePred(list)}
         GROUP BY meno_vlastnika
         ORDER BY shared_lvs DESC, meno_vlastnika
         LIMIT 25
@@ -628,8 +668,10 @@ async function soloLvs(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
   const offset = (page - 1) * limit;
-  const ku = normStr(q.ku || q.f_ku || '');
-  const where = ku ? `WHERE contains(ku_norm, '${ku}')` : '';
+  const kuPred = tokenPred('ku_norm', q.ku || q.f_ku || '', { prefixFirst: false });
+  const namePred = tokenPred('meno_norm', q.q || q.name || q.f_name || '');
+  const conds = [kuPred, namePred].filter(Boolean);
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const SOLO_SORT = {
     meno_vlastnika: 'meno_norm',
     katastralne_uzemie: 'katastralne_uzemie',
@@ -658,9 +700,9 @@ async function owners(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
   const offset = (page - 1) * limit;
-  const search = normStr(q.q || '');
-  const fKu = normStr(q.f_ku || '');
-  const fName = normStr(q.f_name || '');
+  const search = q.q || '';
+  const fKu = q.f_ku || '';
+  const fName = q.f_name || '';
   const fCislo = (q.f_cislo || '').trim().replace(/'/g, "''");
   const fLv = (q.f_lv || '').trim().replace(/'/g, "''");
 
@@ -674,16 +716,20 @@ async function owners(q) {
   const sortDir = q.sort_dir === 'DESC' ? 'DESC' : 'ASC';
 
   const conds = [];
-  if (search) conds.push(prefixPred('meno_norm', search));
-  if (fKu) conds.push(`contains(ku_norm, '${fKu}')`);
+  const searchPred = tokenPred('meno_norm', search);
+  const namePred = tokenPred('meno_norm', fName);
+  const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
+  if (searchPred) conds.push(searchPred);
+  if (kuPred) conds.push(kuPred);
   if (fCislo) conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
   if (fLv) conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-  if (fName) conds.push(prefixPred('meno_norm', fName));
+  if (namePred) conds.push(namePred);
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
-  const countToken = fName || search;
+  const nameToks = tokensOf(fName || search);
+  const countToken = nameToks[0] || '';
   let total;
-  if (countToken && !fKu && !fCislo && !fLv) {
+  if (countToken && nameToks.length === 1 && !fKu && !fCislo && !fLv) {
     const est = await queryObjects(`SELECT COALESCE(SUM(recs), 0) AS cnt FROM surnames WHERE ${prefixPred('token', countToken)}`);
     total = est[0].cnt;
   } else if (!where) {
@@ -709,9 +755,9 @@ async function transferred(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
   const offset = (page - 1) * limit;
-  const search = normStr(q.q || '');
-  const fVlast = normStr(q.f_vlast || q.f_vast || '');
-  const fKu = normStr(q.f_ku || '');
+  const search = q.q || '';
+  const fVlast = q.f_vlast || q.f_vast || '';
+  const fKu = q.f_ku || '';
   const fLv = (q.f_lv || '').trim().replace(/'/g, "''");
   const fCislo = (q.f_cislo || '').trim().replace(/'/g, "''");
   const fDatum = (q.f_datum || '').trim().replace(/'/g, "''");
@@ -730,9 +776,12 @@ async function transferred(q) {
   const sortDir = q.sort_dir === 'ASC' ? 'ASC' : 'DESC';
 
   const conds = [];
-  if (search) conds.push(`vlastnik_norm LIKE '%${search}%'`);
-  if (fVlast) conds.push(`vlastnik_norm LIKE '%${fVlast}%'`);
-  if (fKu) conds.push(`ku_norm LIKE '%${fKu}%'`);
+  const searchPred = tokenPred('vlastnik_norm', search, { prefixFirst: false });
+  const vlastPred = tokenPred('vlastnik_norm', fVlast, { prefixFirst: false });
+  const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
+  if (searchPred) conds.push(searchPred);
+  if (vlastPred) conds.push(vlastPred);
+  if (kuPred) conds.push(kuPred);
   if (fLv) conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
   if (fCislo) conds.push(`CAST(cislo_ku AS VARCHAR) LIKE '%${fCislo}%'`);
   if (fDatum) conds.push(`datum_ucinnosti LIKE '%${fDatum}%'`);
@@ -752,17 +801,20 @@ async function transferred(q) {
 }
 
 async function allUniqueLvs(q) {
-  const search = normStr(q.q || '');
-  const fKu = normStr(q.f_ku || '');
-  const fName = normStr(q.f_name || '');
+  const search = q.q || '';
+  const fKu = q.f_ku || '';
+  const fName = q.f_name || '';
   const fCislo = (q.f_cislo || '').trim().replace(/'/g, "''");
   const fLv = (q.f_lv || '').trim().replace(/'/g, "''");
   const conds = [];
-  if (search) conds.push(`meno_norm LIKE '%${search}%'`);
-  if (fKu) conds.push(`ku_norm LIKE '%${fKu}%'`);
+  const searchPred = tokenPred('meno_norm', search);
+  const namePred = tokenPred('meno_norm', fName);
+  const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
+  if (searchPred) conds.push(searchPred);
+  if (kuPred) conds.push(kuPred);
   if (fCislo) conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
   if (fLv) conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-  if (fName) conds.push(`meno_norm LIKE '%${fName}%'`);
+  if (namePred) conds.push(namePred);
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const rows = await queryObjects(`
     SELECT DISTINCT lv, poradove_cislo, katastralne_uzemie
@@ -774,17 +826,20 @@ async function allUniqueLvs(q) {
 }
 
 async function allUniqueTransferredLvs(q) {
-  const search = normStr(q.q || '');
-  const fVlast = normStr(q.f_vlast || q.f_vast || '');
-  const fKu = normStr(q.f_ku || '');
+  const search = q.q || '';
+  const fVlast = q.f_vlast || q.f_vast || '';
+  const fKu = q.f_ku || '';
   const fLv = (q.f_lv || '').trim().replace(/'/g, "''");
   const fCislo = (q.f_cislo || '').trim().replace(/'/g, "''");
   const fDatum = (q.f_datum || '').trim().replace(/'/g, "''");
   const fYear = parseInt(q.f_year, 10) || null;
   const conds = [];
-  if (search) conds.push(`vlastnik_norm LIKE '%${search}%'`);
-  if (fVlast) conds.push(`vlastnik_norm LIKE '%${fVlast}%'`);
-  if (fKu) conds.push(`ku_norm LIKE '%${fKu}%'`);
+  const searchPred = tokenPred('vlastnik_norm', search, { prefixFirst: false });
+  const vlastPred = tokenPred('vlastnik_norm', fVlast, { prefixFirst: false });
+  const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
+  if (searchPred) conds.push(searchPred);
+  if (vlastPred) conds.push(vlastPred);
+  if (kuPred) conds.push(kuPred);
   if (fLv) conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
   if (fCislo) conds.push(`CAST(cislo_ku AS VARCHAR) LIKE '%${fCislo}%'`);
   if (fDatum) conds.push(`datum_ucinnosti LIKE '%${fDatum}%'`);

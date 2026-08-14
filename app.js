@@ -39,6 +39,31 @@ function fmt(n) {
 }
 function fmtDate(s) { return s || '—'; }
 
+const SK_FOLD = {
+  á: 'a', ä: 'a', č: 'c', ď: 'd', é: 'e', í: 'i', ĺ: 'l', ľ: 'l',
+  ň: 'n', ó: 'o', ô: 'o', ŕ: 'r', š: 's', ť: 't', ú: 'u', ý: 'y', ž: 'z',
+  ě: 'e', ů: 'u', ł: 'l', ą: 'a', ę: 'e',
+};
+
+function fold(s) {
+  return String(s || '')
+    .replace(/[áäčďéěíĺľłňóôŕšťúůýžąę]/gi, (ch) => SK_FOLD[ch.toLowerCase()] || ch)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function tokensOf(s) {
+  return fold(s).split(/[^a-z0-9]+/).filter((t) => t.length >= 1);
+}
+
+function matchesFolded(text, query) {
+  const toks = tokensOf(query);
+  if (!toks.length) return true;
+  const hay = fold(text);
+  return toks.every((t) => hay.includes(t));
+}
+
 function esc(s) {
   if (s === null || s === undefined) return '—';
   return String(s)
@@ -383,7 +408,7 @@ function cleanPersonName(raw) {
 }
 
 function nameKey(s) {
-  return cleanPersonName(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return fold(cleanPersonName(s));
 }
 
 function groupCleanNames(rows) {
@@ -809,7 +834,7 @@ async function loadOverviewSearch(page = 1) {
         <div class="stat-sub">listy vlastníctva</div>
       </div>`;
 
-    ovSearch.names = groupCleanNames(data.names || []);
+    ovSearch.names = groupCleanNames(data.names || []).filter((r) => matchesFolded(r.meno_vlastnika, q));
     fillNameSelect(ovSearch.names);
     renderOverviewNames();
 
@@ -1125,7 +1150,7 @@ window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
 window.sortOverviewNames = sortOverviewNames;
 
-const soloState = { page: 1, ku: '', sortCol: 'katastralne_uzemie', sortDir: 'ASC' };
+const soloState = { page: 1, ku: '', name: '', sortCol: 'katastralne_uzemie', sortDir: 'ASC' };
 
 function sortSoloLvs(col) {
   if (soloState.sortCol === col) {
@@ -1145,10 +1170,20 @@ function onSoloKuInput(val) {
   _soloTimer = setTimeout(() => loadSoloLvs(1), 300);
 }
 
+function onSoloNameInput(val) {
+  soloState.name = val || '';
+  soloState.page = 1;
+  clearTimeout(_soloTimer);
+  _soloTimer = setTimeout(() => loadSoloLvs(1), 300);
+}
+
 function clearSoloFilter() {
-  const el = document.getElementById('solo-ku-filter');
-  if (el) el.value = '';
+  const kuEl = document.getElementById('solo-ku-filter');
+  const nameEl = document.getElementById('solo-name-filter');
+  if (kuEl) kuEl.value = '';
+  if (nameEl) nameEl.value = '';
   soloState.ku = '';
+  soloState.name = '';
   loadSoloLvs(1);
 }
 
@@ -1161,6 +1196,7 @@ async function loadSoloLvs(page = 1) {
     page,
     limit: 50,
     ku: soloState.ku || document.getElementById('solo-ku-filter')?.value || '',
+    name: soloState.name || document.getElementById('solo-name-filter')?.value || '',
     sort_col: soloState.sortCol,
     sort_dir: soloState.sortDir,
   });
@@ -1228,6 +1264,7 @@ async function loadSoloLvs(page = 1) {
 }
 
 window.onSoloKuInput = onSoloKuInput;
+window.onSoloNameInput = onSoloNameInput;
 window.clearSoloFilter = clearSoloFilter;
 window.loadSoloLvs = loadSoloLvs;
 window.sortSoloLvs = sortSoloLvs;
@@ -2796,9 +2833,8 @@ function filterMapByOkres(okresName) {
 }
 window.filterMapByOkres = filterMapByOkres;
 
-// Normalize string for accent-insensitive matching
 function normStr(s) {
-  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  return fold(s).trim();
 }
 
 let _mapSearchIdx = -1; // keyboard nav index
@@ -2965,6 +3001,7 @@ window.sortOverviewNames = sortOverviewNames;
 window.loadSoloLvs = loadSoloLvs;
 window.sortSoloLvs = sortSoloLvs;
 window.onSoloKuInput = onSoloKuInput;
+window.onSoloNameInput = onSoloNameInput;
 window.clearSoloFilter = clearSoloFilter;
 window.onOwnerTopInput = onOwnerTopInput;
 window.setOwnerColFilter = setOwnerColFilter;
