@@ -264,6 +264,55 @@ const ovSearch = {
 let _ovTimer = null;
 let ovSearchController = null;
 
+const BANNER_KEY = 'pzf-src-banner-v1';
+
+function showSourceBannerIfNeeded() {
+  try {
+    if (localStorage.getItem(BANNER_KEY)) return;
+  } catch (_) { /* private mode */ }
+  const el = document.getElementById('source-banner');
+  if (el) el.hidden = false;
+}
+
+function dismissSourceBanner() {
+  try { localStorage.setItem(BANNER_KEY, '1'); } catch (_) {}
+  const el = document.getElementById('source-banner');
+  if (el) el.hidden = true;
+}
+
+function searchQueryFromUrl() {
+  const p = new URLSearchParams(location.search);
+  return (p.get('q') || p.get('search') || '').trim();
+}
+
+function writeSearchUrl(q) {
+  const url = new URL(location.href);
+  if (q && q.length >= 2) url.searchParams.set('q', q);
+  else url.searchParams.delete('q');
+  history.replaceState(null, '', url);
+  document.title = q && q.length >= 2
+    ? `${q} — PZF Explorer`
+    : 'PZF Data Explorer — Neznámi vlastníci';
+}
+
+function shareSearchLink() {
+  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+  if (q.length < 2) {
+    showToast('Najprv zadajte meno alebo obec (min. 2 znaky).', 'info');
+    return;
+  }
+  writeSearchUrl(q);
+  const link = location.href;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(link).then(
+      () => showToast('Odkaz skopírovaný — môžete ho poslať.', 'success'),
+      () => showToast(link, 'info')
+    );
+  } else {
+    showToast(link, 'info');
+  }
+}
+
 function onOverviewSearchInput(val) {
   ovSearch.q = val;
   ovSearch.page = 1;
@@ -289,6 +338,7 @@ function clearOverviewSearch() {
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.fKu = '';
+  writeSearchUrl('');
   const card = document.getElementById('overview-search-card');
   if (card) card.hidden = true;
 }
@@ -327,10 +377,12 @@ async function loadOverviewSearch(page = 1) {
 
   if (q.length < 2) {
     card.hidden = true;
+    writeSearchUrl('');
     return;
   }
 
   card.hidden = false;
+  writeSearchUrl(q);
   document.getElementById('overview-search-label').textContent = `„${q}”`;
   const tableWrap = document.getElementById('overview-search-table');
   const countsWrap = document.getElementById('overview-search-counts');
@@ -424,6 +476,7 @@ async function loadOverviewSearch(page = 1) {
       <div class="bulk-lv-bar">
         <div>⚡ <strong>${fmt(data.total)}</strong> záznamov · <strong>${fmt(data.unique_names)}</strong> mien · <strong>${fmt(data.unique_places)}</strong> obcí · <strong>${lvCount}${more}</strong> LV</div>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="bulk-lv-btn" onclick="window.shareSearchLink()">↗ Zdieľať odkaz</button>
           <button class="bulk-lv-btn" onclick="window.openOverviewInOwners()">👥 Otvoriť v Neznámych vlastníkoch</button>
           ${lvCount ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť ${lvCount} výpisov ↗</button>` : ''}
         </div>
@@ -476,6 +529,8 @@ async function loadOverviewSearch(page = 1) {
   }
 }
 
+window.dismissSourceBanner = dismissSourceBanner;
+window.shareSearchLink = shareSearchLink;
 window.onOverviewSearchInput = onOverviewSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
@@ -2198,6 +2253,8 @@ function renderMapChips(kuList) {
 }
 
 // ── Export all handlers to window object ───────────────────────────────────
+window.dismissSourceBanner = dismissSourceBanner;
+window.shareSearchLink = shareSearchLink;
 window.onOverviewSearchInput = onOverviewSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
@@ -2224,9 +2281,19 @@ window.initSlovakiaMap = initSlovakiaMap;
 async function boot() {
   try {
     await initDb();
-    showTab('map');
+    showSourceBannerIfNeeded();
+    const sharedQ = searchQueryFromUrl();
     tabLoaded['overview'] = true;
     loadOverview();
+    if (sharedQ.length >= 2) {
+      const input = document.getElementById('overview-search');
+      if (input) input.value = sharedQ;
+      ovSearch.q = sharedQ;
+      showTab('overview');
+      loadOverviewSearch(1);
+    } else {
+      showTab('map');
+    }
   } catch (e) {
     console.error(e);
     const overlay = document.getElementById('boot-overlay');
@@ -2236,6 +2303,23 @@ async function boot() {
     showToast('DuckDB WASM sa nepodarilo spustiť: ' + e.message, 'error');
   }
 }
+
+window.addEventListener('popstate', () => {
+  const q = searchQueryFromUrl();
+  const input = document.getElementById('overview-search');
+  if (input) input.value = q;
+  ovSearch.q = q;
+  ovSearch.fName = '';
+  ovSearch.fKu = '';
+  if (q.length >= 2) {
+    showTab('overview');
+    loadOverviewSearch(1);
+  } else {
+    const card = document.getElementById('overview-search-card');
+    if (card) card.hidden = true;
+    document.title = 'PZF Data Explorer — Neznámi vlastníci';
+  }
+});
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', boot);

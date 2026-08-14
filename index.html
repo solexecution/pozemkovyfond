@@ -53,6 +53,17 @@
   </div>
 </header>
 
+<div id="source-banner" class="source-banner" hidden>
+  <div class="source-banner-inner">
+    <p>
+      <strong>Zdroj: Slovenský pozemkový fond.</strong>
+      Zoznam nezistených vlastníkov je informatívny — údaje pochádzajú z katastra nehnuteľností (stav k 30.06.2026).
+      <a href="https://pozfond.sk/verejny-pristup-k-informaciam/zoznam-nezistenych-vlastnikov/" target="_blank" rel="noopener">pozfond.sk ↗</a>
+    </p>
+    <button type="button" class="source-banner-close" onclick="dismissSourceBanner()" aria-label="Zavrieť">×</button>
+  </div>
+</div>
+
 <!-- ══════════════════════════════════════════════════════════════
      MAIN CONTENT
 ══════════════════════════════════════════════════════════════ -->
@@ -72,6 +83,7 @@
                  placeholder="Hľadaj meno alebo obec / k.ú. (napr. Kuzmiak, Sulín)…"
                  oninput="onOverviewSearchInput(this.value)"
                  onkeydown="onOverviewSearchKeydown(event)">
+          <button class="btn btn-ghost" type="button" onclick="shareSearchLink()" title="Kopírovať odkaz na toto hľadanie">↗ Zdieľať</button>
           <button class="btn btn-ghost" type="button" onclick="clearOverviewSearch()">Zrušiť</button>
         </div>
         <div class="stat-grid" id="stats-grid">
