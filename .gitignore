@@ -2,6 +2,9 @@ node_modules/
 .browser-data/
 pzf.duckdb
 pzf.duckdb.wal
+data/pzf.duckdb
+data/pzf.duckdb.wal
+data/pzf.duckdb.gz
 *.csv
 *.xlsx
 *.pdf
