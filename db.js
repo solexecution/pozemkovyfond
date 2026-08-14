@@ -4,7 +4,7 @@
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
 import { parseLvText } from './lv_parser.js';
 
-const DATA_CACHE = 'pzf-data-v5';
+const DATA_CACHE = 'pzf-data-v6';
 
 let db = null;
 let conn = null;
@@ -208,8 +208,9 @@ export async function initDb() {
 
   await registerParquet('places_agg.parquet', 'obce', 8, 12);
   await registerParquet('surnames.parquet', 'index mien', 12, 16);
-  await registerParquet('lv_co.parquet', 'hustota LV', 16, 20);
-  await registerParquet('unknown_owners.parquet', 'register (cache po 1. načítaní)', 20, 78);
+  await registerParquet('lv_co.parquet', 'hustota LV', 16, 18);
+  await registerParquet('solo_lvs.parquet', 'solo LV', 18, 24);
+  await registerParquet('unknown_owners.parquet', 'register (cache po 1. načítaní)', 24, 78);
   await registerParquet('transferred_rights.parquet', 'prevedené práva', 78, 84);
   await registerParquet('lv_details.parquet', 'uložené LV', 84, 86);
   await registerParquet('lv_owners.parquet', 'vlastníkov LV', 86, 88);
@@ -221,10 +222,12 @@ export async function initDb() {
   await queryRun(`CREATE OR REPLACE TABLE places_agg AS SELECT * FROM read_parquet('places_agg.parquet')`);
   await queryRun(`CREATE OR REPLACE TABLE surnames AS SELECT * FROM read_parquet('surnames.parquet')`);
   await queryRun(`CREATE OR REPLACE TABLE lv_co AS SELECT * FROM read_parquet('lv_co.parquet')`);
+  await queryRun(`CREATE OR REPLACE TABLE solo_lvs AS SELECT * FROM read_parquet('solo_lvs.parquet')`);
   try {
     await queryRun(`CREATE INDEX idx_surnames_token ON surnames(token)`);
     await queryRun(`CREATE INDEX idx_places_ku ON places_agg(ku_norm)`);
     await queryRun(`CREATE INDEX idx_lv_co ON lv_co(poradove_cislo, lv)`);
+    await queryRun(`CREATE INDEX idx_solo_ku ON solo_lvs(ku_norm)`);
   } catch (_) { /* older wasm may skip */ }
 
   await queryRun(`
@@ -619,6 +622,23 @@ async function nameKuDetail(q) {
   }
 
   return { summary, lvs, transferred, coowners };
+}
+
+async function soloLvs(q) {
+  const page = Math.max(1, parseInt(q.page, 10) || 1);
+  const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
+  const offset = (page - 1) * limit;
+  const ku = normStr(q.ku || q.f_ku || '');
+  const where = ku ? `WHERE contains(ku_norm, '${ku}')` : '';
+
+  const cntRow = await queryObjects(`SELECT COUNT(*) AS cnt FROM solo_lvs ${where}`);
+  const rows = await queryObjects(`
+    SELECT meno_vlastnika, katastralne_uzemie, cislo_ku, lv
+    FROM solo_lvs ${where}
+    ORDER BY katastralne_uzemie, lv
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+  return { total: cntRow[0].cnt, page, limit, rows };
 }
 
 async function owners(q) {
@@ -1056,6 +1076,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'name-ku-detail':
       result = await nameKuDetail(q);
+      break;
+    case 'solo-lvs':
+      result = await soloLvs(q);
       break;
     case 'owners':
       result = await owners(q);

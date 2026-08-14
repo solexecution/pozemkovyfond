@@ -35,6 +35,7 @@
 
     <nav class="nav">
       <button class="nav-btn" onclick="showTab('overview')" id="nav-overview">📊 Prehľad</button>
+      <button class="nav-btn" onclick="showTab('solo')" id="nav-solo">🌲 Solo LV</button>
       <button class="nav-btn" onclick="showTab('owners')"   id="nav-owners">👥 Neznámi vlastníci</button>
       <button class="nav-btn" onclick="showTab('transferred')" id="nav-transferred">📋 Prevedené práva</button>
       <button class="nav-btn" onclick="showTab('overlap')"  id="nav-overlap">🔗 Prienik dát</button>
@@ -204,6 +205,34 @@
 
   </div><!-- /tab-overview -->
 
+  <!-- ── TAB: ALL SOLO LVs ────────────────────────────────────── -->
+  <div class="tab" id="tab-solo">
+    <div class="card animate-in">
+      <div class="card-title">
+        Solo LV — jediný neznámy vlastník na liste
+        <span id="solo-total-label"></span>
+      </div>
+      <p class="insight-note">
+        Všetky listy, kde je v registri PZF len jedno neznáme meno. Nie je to viazané na výber mena.
+        Voliteľne zúž podľa k.ú. (stačí časť názvu, napr. Sulín → Malý aj Veľký Sulín).
+      </p>
+      <div class="search-bar">
+        <div class="search-input-wrap">
+          <span class="search-icon">📍</span>
+          <input type="text" class="search-input" id="solo-ku-filter"
+                 placeholder="Filter k.ú. (napr. Stráňany, Sulín)…"
+                 oninput="onSoloKuInput(this.value)"
+                 enterkeyhint="search">
+        </div>
+        <button class="btn btn-ghost" type="button" onclick="clearSoloFilter()">Zrušiť</button>
+      </div>
+      <div id="solo-bulk-bar"></div>
+      <div class="table-wrap" id="solo-table-wrap">
+        <div class="loading-state"><div class="loading-spinner"></div>Načítavam solo LV…</div>
+      </div>
+      <div class="pagination" id="solo-pagination"></div>
+    </div>
+  </div>
 
   <!-- ── TAB: OWNERS ──────────────────────────────────────────── -->
   <div class="tab" id="tab-owners">

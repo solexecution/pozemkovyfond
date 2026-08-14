@@ -83,6 +83,25 @@ async function main() {
   await conn.run(`
     COPY (
       SELECT
+        u.meno_vlastnika,
+        u.katastralne_uzemie,
+        u.poradove_cislo AS cislo_ku,
+        u.lv,
+        u.meno_norm,
+        u.ku_norm
+      FROM unknown_owners u
+      JOIN read_parquet('${OUT_DIR}/lv_co.parquet') c
+        ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
+      WHERE c.names_on_lv = 1
+      ORDER BY u.katastralne_uzemie, u.lv
+    ) TO '${OUT_DIR}/solo_lvs.parquet'
+    (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 22)
+  `);
+  console.log(`solo_lvs.parquet  ${mb(path.join(__dirname, 'data', 'solo_lvs.parquet'))} MB`);
+
+  await conn.run(`
+    COPY (
+      SELECT
         katastralne_uzemie,
         poradove_cislo,
         ANY_VALUE(ku_norm) AS ku_norm,

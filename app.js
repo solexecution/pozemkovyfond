@@ -109,6 +109,7 @@ function showTab(name) {
   if (!tabLoaded[name]) {
     tabLoaded[name] = true;
     switch (name) {
+      case 'solo':         loadSoloLvs();      break;
       case 'owners':       loadOwners();       break;
       case 'transferred':  loadTransferred();  break;
       case 'overlap':      loadOverlap();      break;
@@ -977,6 +978,95 @@ window.clearPicks = clearPicks;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
+
+const soloState = { page: 1, ku: '' };
+let _soloTimer = null;
+
+function onSoloKuInput(val) {
+  soloState.ku = val || '';
+  soloState.page = 1;
+  clearTimeout(_soloTimer);
+  _soloTimer = setTimeout(() => loadSoloLvs(1), 300);
+}
+
+function clearSoloFilter() {
+  const el = document.getElementById('solo-ku-filter');
+  if (el) el.value = '';
+  soloState.ku = '';
+  loadSoloLvs(1);
+}
+
+async function loadSoloLvs(page = 1) {
+  soloState.page = page;
+  const wrap = document.getElementById('solo-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div>Načítavam solo LV…</div>';
+  const params = new URLSearchParams({
+    page,
+    limit: 50,
+    ku: soloState.ku || document.getElementById('solo-ku-filter')?.value || '',
+  });
+  try {
+    const data = await apiFetch(`/solo-lvs?${params}`).then((r) => r.json());
+    if (data.error) throw new Error(data.error);
+    const label = document.getElementById('solo-total-label');
+    if (label) label.textContent = `${fmt(data.total)} listov`;
+    window._soloAllPage = (data.rows || []).map((r) => ({
+      lv: r.lv, ku: r.cislo_ku, kuName: r.katastralne_uzemie,
+    }));
+    const bulk = document.getElementById('solo-bulk-bar');
+    if (bulk) {
+      bulk.innerHTML = data.rows.length ? `
+        <div class="bulk-lv-bar">
+          <div>Stránka: <strong>${data.rows.length}</strong> solo LV</div>
+          <button class="bulk-lv-btn" style="background:linear-gradient(135deg,#10b981,#059669)"
+                  onclick="window.openAllLvs(window._soloAllPage)">🌲 Otvoriť tieto výpisy ↗</button>
+        </div>` : '';
+    }
+    if (!data.rows.length) {
+      wrap.innerHTML = `<div class="empty-state">Žiadne solo LV${soloState.ku ? ` pre k.ú. „${esc(soloState.ku)}“` : ''}.</div>`;
+      renderPagination('solo-pagination', page, data.total, 50, loadSoloLvs);
+      return;
+    }
+    wrap.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Meno</th>
+            <th>k.ú.</th>
+            <th>Kód</th>
+            <th>LV</th>
+            <th>Odhad podielu</th>
+            <th>Kataster</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.rows.map((r) => {
+            const clean = cleanPersonName(r.meno_vlastnika);
+            const safeKu = esc(r.katastralne_uzemie).replace(/'/g, "\\'");
+            return `
+              <tr>
+                <td><strong>${esc(clean)}</strong></td>
+                <td>${esc(r.katastralne_uzemie)}</td>
+                <td>${fmt(r.cislo_ku)}</td>
+                <td><span class="badge badge-amber badge-clickable"
+                      onclick="window.openKatasterLV('${safeKu}', '${r.cislo_ku}', '${r.lv}')">📄 LV ${fmt(r.lv)} ↗</span></td>
+                <td><strong>1.0</strong></td>
+                <td><a class="btn-lv-link" target="_blank" rel="noopener"
+                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+    renderPagination('solo-pagination', page, data.total, 50, loadSoloLvs);
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
+  }
+}
+
+window.onSoloKuInput = onSoloKuInput;
+window.clearSoloFilter = clearSoloFilter;
+window.loadSoloLvs = loadSoloLvs;
 
 // ════════════════════════════════════════════════════════════════════════════
 //  OWNERS TAB
@@ -2707,6 +2797,9 @@ window.clearPicks = clearPicks;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
+window.loadSoloLvs = loadSoloLvs;
+window.onSoloKuInput = onSoloKuInput;
+window.clearSoloFilter = clearSoloFilter;
 window.onOwnerTopInput = onOwnerTopInput;
 window.setOwnerColFilter = setOwnerColFilter;
 window.onTrTopInput = onTrTopInput;
