@@ -1981,7 +1981,7 @@ window.setSampleQuery = setSampleQuery;
 window.initSlovakiaMap = initSlovakiaMap;
 
 // ── Init ───────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', async () => {
+async function boot() {
   try {
     await initDb();
     showTab('map');
@@ -1995,4 +1995,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (overlay) overlay.classList.add('boot-error');
     showToast('DuckDB WASM sa nepodarilo spustiť: ' + e.message, 'error');
   }
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}

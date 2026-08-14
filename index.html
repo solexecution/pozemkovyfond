@@ -390,6 +390,14 @@ LIMIT 20</textarea>
 
 <div id="toast"></div>
 
-<script type="module" src="app.js"></script>
+<script type="module">
+  import('./app.js').catch((e) => {
+    const msg = document.getElementById('boot-msg');
+    const overlay = document.getElementById('boot-overlay');
+    if (msg) msg.textContent = 'Chyba načítania: ' + (e && e.message ? e.message : e);
+    if (overlay) overlay.classList.add('boot-error');
+    console.error(e);
+  });
+</script>
 </body>
 </html>

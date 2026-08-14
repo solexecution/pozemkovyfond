@@ -1,11 +1,8 @@
 /**
  * DuckDB WASM client — replaces the Express API for static GitHub Pages.
  */
-import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.1/+esm';
+import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
 import { parseLvText } from './lv_parser.js';
-
-const DUCKDB_VERSION = '1.29.1';
-const CDN = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${DUCKDB_VERSION}/dist`;
 
 let db = null;
 let conn = null;
@@ -137,8 +134,9 @@ async function registerParquet(filename, label, weightStart, weightEnd) {
   const buf = await fetchBuffer(dataUrl(filename), (p) => {
     setProgress(weightStart + (weightEnd - weightStart) * p);
   });
+  const bytes = buf.byteLength;
   await db.registerFileBuffer(filename, buf);
-  return buf.byteLength;
+  return bytes;
 }
 
 export async function initDb() {
@@ -147,23 +145,20 @@ export async function initDb() {
   setStatus('Inicializujem DuckDB WASM...');
   setProgress(2);
 
-  const bundle = {
-    mainModule: `${CDN}/duckdb-eh.wasm`,
-    mainWorker: `${CDN}/duckdb-browser-eh.worker.js`,
-  };
-
+  const bundles = duckdb.getJsDelivrBundles();
+  const bundle = await duckdb.selectBundle(bundles);
   const workerUrl = URL.createObjectURL(
     new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' })
   );
   const worker = new Worker(workerUrl);
   db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
-  await db.instantiate(bundle.mainModule);
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
   URL.revokeObjectURL(workerUrl);
   conn = await db.connect();
   setProgress(8);
 
-  const uoBytes = await registerParquet('unknown_owners.parquet', 'register neznámych vlastníkov (51 MB)', 8, 70);
-  const trBytes = await registerParquet('transferred_rights.parquet', 'prevedené práva', 70, 78);
+  await registerParquet('unknown_owners.parquet', 'register neznámych vlastníkov (51 MB)', 8, 70);
+  await registerParquet('transferred_rights.parquet', 'prevedené práva', 70, 78);
   await registerParquet('lv_details.parquet', 'uložené LV', 78, 82);
   await registerParquet('lv_owners.parquet', 'vlastníkov LV', 82, 86);
   await registerParquet('lv_parcels.parquet', 'parcely LV', 86, 90);
@@ -290,8 +285,7 @@ export async function initDb() {
 
   ready = true;
   setProgress(100);
-  const mb = ((uoBytes + trBytes) / 1024 / 1024).toFixed(0);
-  setStatus(`DuckDB WASM · ${mb} MB`, 'ok');
+  setStatus('DuckDB WASM · pripravené', 'ok');
   hideBoot();
 }
 
