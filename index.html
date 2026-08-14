@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PZF Data Explorer — Neznámi vlastníci</title>
+  <meta name="description" content="Analytický dashboard pre dáta Pozemkového fondu SR — neznámi vlastníci a prevedené práva.">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+
+<div id="boot-overlay">
+  <div class="boot-card">
+    <div class="boot-logo">🏛️ PZF Explorer</div>
+    <p id="boot-msg">Inicializujem DuckDB WASM...</p>
+    <div class="boot-bar"><div id="boot-bar-fill"></div></div>
+    <p id="boot-pct">0 %</p>
+    <p class="boot-hint">Prvé načítanie stiahne register (~51 MB) a beží priamo v prehliadači.</p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════════════════════════ -->
+<header class="header">
+  <div class="header-inner">
+    <div class="logo">
+      <span class="logo-icon">🏛️</span>
+      <span class="logo-text">PZF Explorer</span>
+      <span class="logo-badge">DuckDB WASM</span>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-btn" onclick="showTab('overview')" id="nav-overview">📊 Prehľad</button>
+      <button class="nav-btn" onclick="showTab('owners')"   id="nav-owners">👥 Neznámi vlastníci</button>
+      <button class="nav-btn" onclick="showTab('transferred')" id="nav-transferred">📋 Prevedené práva</button>
+      <button class="nav-btn" onclick="showTab('overlap')"  id="nav-overlap">🔗 Prienik dát</button>
+      <button class="nav-btn" onclick="showTab('correlations')" id="nav-correlations">📈 Korelácie</button>
+      <button class="nav-btn" onclick="showTab('lv-analysis')" id="nav-lv-analysis">🌲 Analýza LV</button>
+      <button class="nav-btn active" onclick="showTab('map')"     id="nav-map">🗺️ Mapa SK</button>
+      <button class="nav-btn" onclick="showTab('sql')"     id="nav-sql">💻 SQL Query</button>
+    </nav>
+
+    <div class="header-right">
+      <div class="db-status">
+        <div class="db-dot loading" id="db-dot"></div>
+        <span id="db-status-text">Načítavam...</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════════
+     MAIN CONTENT
+══════════════════════════════════════════════════════════════ -->
+<main class="main">
+
+  <!-- ── TAB: OVERVIEW ─────────────────────────────────────────── -->
+  <div class="tab active" id="tab-overview">
+
+    <!-- Hero Stats -->
+    <div class="hero animate-in">
+      <div class="hero-content">
+        <h1 class="hero-title">Neznámi vlastníci pôdy — SK</h1>
+        <p class="hero-subtitle">Stav k 30.06.2026 · Databáza Slovenského pozemkového fondu</p>
+        <div class="stat-grid" id="stats-grid">
+          <div class="stat-card animate-in">
+            <div class="stat-label">Neznámi vlastníci</div>
+            <div class="stat-value" id="s-total-uo">—</div>
+            <div class="stat-sub">záznamy v registri</div>
+          </div>
+          <div class="stat-card animate-in">
+            <div class="stat-label">Katast. územia</div>
+            <div class="stat-value" id="s-unique-ku">—</div>
+            <div class="stat-sub">unikátnych k.ú.</div>
+          </div>
+          <div class="stat-card animate-in">
+            <div class="stat-label">Unikátne LV</div>
+            <div class="stat-value" id="s-unique-lv">—</div>
+            <div class="stat-sub">listy vlastníctva</div>
+          </div>
+          <div class="stat-card animate-in">
+            <div class="stat-label">Unikátne mená</div>
+            <div class="stat-value" id="s-unique-names">—</div>
+            <div class="stat-sub">rôznych vlastníkov</div>
+          </div>
+          <div class="stat-card animate-in">
+            <div class="stat-label">Prevedené práva</div>
+            <div class="stat-value" id="s-transferred">—</div>
+            <div class="stat-sub">2022–2025</div>
+          </div>
+          <div class="stat-card animate-in">
+            <div class="stat-label">Prienik LV</div>
+            <div class="stat-value" id="s-overlap">—</div>
+            <div class="stat-sub">zhodné k.ú.+LV</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts row 1 -->
+    <div class="section">
+      <div class="section-title">🏘️ Distribúcia podľa katast. územia</div>
+      <div class="grid-2">
+        <div class="card animate-in">
+          <div class="card-title">Top 20 katast. území — Neznámi vlastníci <span>počet osôb</span></div>
+          <div class="chart-wrap tall"><canvas id="chart-top-ku"></canvas></div>
+        </div>
+        <div class="card animate-in">
+          <div class="card-title">Top 20 katast. území — Prevedené práva <span>počet záznamov</span></div>
+          <div class="chart-wrap tall"><canvas id="chart-top-ku-tr"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts row 2 -->
+    <div class="section">
+      <div class="section-title">📅 Časový vývoj</div>
+      <div class="grid-2">
+        <div class="card animate-in">
+          <div class="card-title">Prevedené práva podľa roka <span>2022–2025</span></div>
+          <div class="chart-wrap"><canvas id="chart-by-year"></canvas></div>
+        </div>
+        <div class="card animate-in">
+          <div class="card-title">Abecedná distribúcia k.ú. <span>podľa prvého písmena</span></div>
+          <div class="chart-wrap"><canvas id="chart-alpha"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tab-overview -->
+
+
+  <!-- ── TAB: OWNERS ──────────────────────────────────────────── -->
+  <div class="tab" id="tab-owners">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div class="card-title">👥 Register neznámych vlastníkov <span id="owners-total-label"></span></div>
+      <div class="search-bar">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="owner-search" placeholder="Hľadaj meno vlastníka..." oninput="onOwnerTopInput('name', this.value)">
+        </div>
+        <div class="search-input-wrap" style="max-width:220px">
+          <span class="search-icon">📍</span>
+          <input type="text" class="search-input" id="owner-ku-filter" placeholder="Katast. územie..." oninput="onOwnerTopInput('ku', this.value)">
+        </div>
+        <button class="btn btn-ghost" onclick="clearOwnerSearch()">Zrušiť</button>
+      </div>
+      <div id="owners-bulk-bar"></div>
+      <div class="table-wrap" id="owners-table-wrap">
+        <div class="loading-state"><div class="loading-spinner"></div>Načítavam dáta...</div>
+      </div>
+      <div class="pagination" id="owners-pagination"></div>
+    </div>
+  </div><!-- /tab-owners -->
+
+
+  <!-- ── TAB: TRANSFERRED ─────────────────────────────────────── -->
+  <div class="tab" id="tab-transferred">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div class="card-title">📋 Prevedené vlastnícke práva <span id="tr-total-label"></span></div>
+      <div class="search-bar">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="tr-search" placeholder="Hľadaj meno vlastníka..." oninput="onTrTopInput('vlastnik', this.value)">
+        </div>
+        <div class="search-input-wrap" style="max-width:180px">
+          <span class="search-icon">📍</span>
+          <input type="text" class="search-input" id="tr-ku-filter" placeholder="Katast. územie..." oninput="onTrTopInput('ku', this.value)">
+        </div>
+        <select class="search-input" id="tr-year-filter" style="max-width:130px" onchange="onTrTopInput('year', this.value)">
+          <option value="">Všetky roky</option>
+          <option value="2022">2022</option>
+          <option value="2023">2023</option>
+          <option value="2024">2024</option>
+          <option value="2025">2025</option>
+        </select>
+        <button class="btn btn-ghost" onclick="clearTrSearch()">Zrušiť</button>
+      </div>
+      <div id="tr-bulk-bar"></div>
+      <div class="table-wrap" id="tr-table-wrap">
+        <div class="loading-state"><div class="loading-spinner"></div>Načítavam dáta...</div>
+      </div>
+      <div class="pagination" id="tr-pagination"></div>
+    </div>
+  </div><!-- /tab-transferred -->
+
+
+  <!-- ── TAB: OVERLAP ─────────────────────────────────────────── -->
+  <div class="tab" id="tab-overlap">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div class="card-title">
+        🔗 Prienik — vlastníci v oboch databázach
+        <span id="overlap-count-label"></span>
+      </div>
+      <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:1.25rem">
+        Tieto LV (listy vlastníctva) sa nachádzajú súčasne v registri neznámych vlastníkov (stav 2026)
+        <strong style="color:var(--amber)">AJ</strong> v zozname prevedených práv (2022–2025), čo naznačuje
+        potenciálnu súvislosť alebo nedokončený prevod.
+      </p>
+      <div class="table-wrap" id="overlap-table-wrap">
+        <div class="loading-state"><div class="loading-spinner"></div>Načítavam prienik...</div>
+      </div>
+    </div>
+
+    <!-- Overlap charts -->
+    <div class="grid-2">
+      <div class="card animate-in">
+        <div class="card-title">Top k.ú. v prieniku <span>počet neznámych vlastníkov</span></div>
+        <div class="chart-wrap"><canvas id="chart-overlap-ku"></canvas></div>
+      </div>
+      <div class="card animate-in">
+        <div class="card-title">Distribúcia LV v prieniku <span>histogram</span></div>
+        <div class="chart-wrap"><canvas id="chart-overlap-lv"></canvas></div>
+      </div>
+    </div>
+  </div><!-- /tab-overlap -->
+
+
+  <!-- ── TAB: CORRELATIONS ────────────────────────────────────── -->
+  <div class="tab" id="tab-correlations">
+    <div class="section">
+      <div class="section-title">📈 Štatistické korelácie medzi datasetmi</div>
+    </div>
+
+    <div class="grid-auto">
+      <!-- SPF analysis -->
+      <div class="card animate-in">
+        <div class="card-title">SPF vs. bežní vlastníci <span>prevedené práva</span></div>
+        <div class="chart-wrap"><canvas id="chart-spf"></canvas></div>
+      </div>
+
+      <!-- Transfer rate by k.u. -->
+      <div class="card animate-in">
+        <div class="card-title">Miera prevodu na k.ú. <span>% prevedených/neznámych</span></div>
+        <div id="corr-ku-bars" class="corr-list" style="max-height:280px;overflow-y:auto">
+          <div class="loading-state"><div class="loading-spinner"></div></div>
+        </div>
+      </div>
+
+      <!-- LV bucket distribution -->
+      <div class="card animate-in">
+        <div class="card-title">Distribúcia LV čísel — Neznámi vlastníci <span>histogram</span></div>
+        <div class="chart-wrap"><canvas id="chart-lv-buckets"></canvas></div>
+      </div>
+
+      <!-- Year trend by ku -->
+      <div class="card animate-in">
+        <div class="card-title">Vývoj prevodu podľa rokov a k.ú. <span>heat map</span></div>
+        <div class="chart-wrap"><canvas id="chart-year-ku"></canvas></div>
+      </div>
+    </div>
+  </div><!-- /tab-correlations -->
+
+
+  <!-- ── TAB: LV ANALYSIS ─────────────────────────────────────── -->
+  <div class="tab" id="tab-lv-analysis">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:1rem">
+        <div>
+          <div class="card-title">🌲 Analýza Vlastníctva & Parciel z Katastra</div>
+          <div style="font-size:0.83rem;color:var(--text-secondary)" id="lv-analysis-subtitle">
+            Hĺbková analýza výmer (m² / ha), spoluvlastníckych podielov, parciel a príbuzenských vzťahov
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem">
+          <input type="text" class="search-input" id="lv-analysis-search" placeholder="Zadaj meno pre analýzu (napr. kuzmiak michal)..." style="width:280px">
+          <button class="btn" onclick="runLvAnalysisUI()">🔍 Analyzovať</button>
+        </div>
+      </div>
+
+      <!-- Overview Stats Grid -->
+      <div class="stat-grid" id="lv-stats-grid" style="margin-bottom:1.5rem">
+        <div class="stat-card">
+          <div class="stat-label">Spracované LV v DuckDB</div>
+          <div class="stat-value" id="lv-stat-count">0</div>
+          <div class="stat-sub">Uložené výpisy Katastra</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Vypočítaná Výmera Vlastníctva</div>
+          <div class="stat-value" id="lv-stat-ha" style="color:#6ee7b7">0.0000 ha</div>
+          <div class="stat-sub" id="lv-stat-m2">0 m² čistej výmery</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Spoluvlastníci & Príbuzní</div>
+          <div class="stat-value" id="lv-stat-coowners" style="color:#93c5fd">0</div>
+          <div class="stat-sub">Prepojené osoby na LV</div>
+        </div>
+      </div>
+
+      <!-- Reprocess hint banner (injected by JS when some LVs are missing) -->
+      <div id="lv-reprocess-hint"></div>
+
+      <!-- LV Portfolio Table -->
+      <div class="card-title" style="font-size:0.9rem;margin-bottom:0.75rem">📜 Vlastnené Listy Vlastníctva & Vypočítaný Podiel (m²)</div>
+      <div class="table-wrap" id="lv-portfolio-wrap" style="margin-bottom:1.5rem">
+        <div class="empty-state">Pre zobrazenie analýzy kliknite na tlačidlo "⚡ Spracovať a Analyzovať Všetky LV" v vyhľadávaní</div>
+      </div>
+
+      <!-- Land Type Breakdown & Co-Owners Grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:1.5rem">
+        <div>
+          <div class="card-title" style="font-size:0.9rem;margin-bottom:0.75rem">📊 Štruktúra Pozemkov Podľa Druhu</div>
+          <div class="table-wrap" id="lv-landtype-wrap"></div>
+        </div>
+        <div>
+          <div class="card-title" style="font-size:0.9rem;margin-bottom:0.75rem">👥 Spoluvlastníci & Rodinné Prepojenia</div>
+          <div class="table-wrap" id="lv-coowners-wrap"></div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-lv-analysis -->
+
+  <!-- ── TAB: GEOGRAPHIC MAP OF SLOVAKIA ────────────────────────── -->
+  <div class="tab" id="tab-map">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:1rem">
+        <div>
+          <div class="card-title">🗺️ Interaktívna Geografická Mapa Slovenska — Okresy & Katastre</div>
+          <div style="font-size:0.83rem;color:var(--text-secondary)">
+            Kliknite na okres alebo katastrálne územie na mape pre okamžité filtrovanie celej databázy neznámych vlastníkov
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <select class="search-input" id="map-okres-select" onchange="filterMapByOkres(this.value)" style="width:200px">
+            <option value="">-- Všetky Okresy --</option>
+          </select>
+          <div style="position:relative">
+            <input type="text" class="search-input" id="map-search-input"
+              placeholder="Hľadať obec / kataster (napr. Sulín)..."
+              oninput="onMapSearchInput(this.value)"
+              onkeydown="onMapSearchKeydown(event)"
+              autocomplete="off"
+              style="width:280px">
+            <div id="map-search-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#1a1f2e;border:1px solid var(--border-color);border-radius:8px;z-index:9999;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,0.5)"></div>
+          </div>
+          <button class="btn btn-ghost" onclick="resetMapView()">🔄 Reset Mapy</button>
+        </div>
+      </div>
+
+      <!-- Map Container -->
+      <div id="sk-map" style="height:550px;width:100%;border-radius:12px;border:1px solid var(--border-color);overflow:hidden;margin-bottom:1.5rem;box-shadow:0 10px 25px rgba(0,0,0,0.3)"></div>
+
+      <!-- Map Quick Stats & Hotspot Districts Grid -->
+      <div class="card-title" style="font-size:0.9rem;margin-bottom:0.75rem">📍 Najvýznamnejšie Katastrálne Územia & Hot-spoty PZF</div>
+      <div id="map-chips-wrap" style="display:flex;gap:0.5rem;flex-wrap:wrap"></div>
+    </div>
+  </div><!-- /tab-map -->
+
+
+  <!-- ── TAB: SQL ──────────────────────────────────────────────── -->
+  <div class="tab" id="tab-sql">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div class="card-title">💻 Vlastný SQL dotaz</div>
+      <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:1rem">
+        Dostupné tabuľky: <code style="color:var(--cyan)">unknown_owners</code>,
+        <code style="color:var(--cyan)">transferred_rights</code> ·
+        Pohľady: <code style="color:var(--violet)">v_top_katastralne</code>,
+        <code style="color:var(--violet)">v_transferred_by_year</code>,
+        <code style="color:var(--violet)">v_overlap</code>,
+        <code style="color:var(--violet)">v_transferred_top_ku</code>,
+        <code style="color:var(--violet)">v_alpha_distribution</code>
+      </p>
+      <textarea class="sql-editor" id="sql-editor" spellcheck="false">SELECT katastralne_uzemie, COUNT(*) as pocet
+FROM unknown_owners
+GROUP BY katastralne_uzemie
+ORDER BY pocet DESC
+LIMIT 20</textarea>
+      <div style="display:flex;gap:.75rem;margin-top:.75rem;flex-wrap:wrap">
+        <button class="btn" onclick="runCustomQuery()">▶ Spustiť dotaz</button>
+        <button class="btn btn-ghost" onclick="setSampleQuery('overlap')">Príklad: Prienik</button>
+        <button class="btn btn-ghost" onclick="setSampleQuery('spf')">Príklad: SPF vlastníci</button>
+        <button class="btn btn-ghost" onclick="setSampleQuery('stats')">Príklad: Štatistiky</button>
+      </div>
+    </div>
+
+    <div class="card animate-in" id="sql-result-card" style="display:none">
+      <div class="card-title">
+        Výsledok
+        <span id="sql-result-count"></span>
+      </div>
+      <div class="table-wrap" id="sql-table-wrap"></div>
+    </div>
+  </div><!-- /tab-sql -->
+
+</main>
+
+<div id="toast"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

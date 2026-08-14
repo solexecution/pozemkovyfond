@@ -1,0 +1,15 @@
+node_modules/
+.browser-data/
+pzf.duckdb
+pzf.duckdb.wal
+*.csv
+*.xlsx
+*.pdf
+sample_lv_*.html
+bo_*.html
+bo_*.pdf
+__check_sulin.mjs
+okresy.json
+sk_okresy.json
+.DS_Store
+Thumbs.db
