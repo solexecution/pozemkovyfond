@@ -313,20 +313,62 @@ function shareSearchLink() {
   }
 }
 
+function setOverviewSearching(on, msg) {
+  const form = document.getElementById('overview-search-form');
+  const status = document.getElementById('overview-search-status');
+  const btn = document.getElementById('overview-search-go');
+  if (form) form.classList.toggle('searching', !!on);
+  if (btn) btn.disabled = !!on;
+  if (status) {
+    if (on) {
+      status.hidden = false;
+      status.textContent = msg || 'Hľadám v registri…';
+    } else if (msg) {
+      status.hidden = false;
+      status.textContent = msg;
+    } else {
+      status.hidden = true;
+      status.textContent = '';
+    }
+  }
+}
+
+function submitOverviewSearch(e) {
+  if (e) e.preventDefault();
+  const input = document.getElementById('overview-search');
+  const q = (input?.value || '').trim();
+  ovSearch.q = q;
+  ovSearch.page = 1;
+  ovSearch.fName = '';
+  ovSearch.fKu = '';
+  clearTimeout(_ovTimer);
+  if (q.length < 2) {
+    setOverviewSearching(false, 'Zadajte aspoň 2 znaky.');
+    return;
+  }
+  if (input) input.blur();
+  setOverviewSearching(true, 'Hľadám v registri…');
+  loadOverviewSearch(1);
+}
+
 function onOverviewSearchInput(val) {
   ovSearch.q = val;
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.fKu = '';
   clearTimeout(_ovTimer);
-  _ovTimer = setTimeout(() => loadOverviewSearch(1), 280);
+  if (val.trim().length < 2) {
+    setOverviewSearching(false);
+    return;
+  }
+  setOverviewSearching(true, 'Hľadám…');
+  _ovTimer = setTimeout(() => loadOverviewSearch(1), 400);
 }
 
 function onOverviewSearchKeydown(e) {
   if (e.key === 'Enter') {
     e.preventDefault();
-    clearTimeout(_ovTimer);
-    loadOverviewSearch(1);
+    submitOverviewSearch(e);
   }
   if (e.key === 'Escape') clearOverviewSearch();
 }
@@ -339,6 +381,7 @@ function clearOverviewSearch() {
   ovSearch.fName = '';
   ovSearch.fKu = '';
   writeSearchUrl('');
+  setOverviewSearching(false);
   const card = document.getElementById('overview-search-card');
   if (card) card.hidden = true;
 }
@@ -378,11 +421,13 @@ async function loadOverviewSearch(page = 1) {
   if (q.length < 2) {
     card.hidden = true;
     writeSearchUrl('');
+    setOverviewSearching(false);
     return;
   }
 
   card.hidden = false;
   writeSearchUrl(q);
+  setOverviewSearching(true, 'Hľadám v registri…');
   document.getElementById('overview-search-label').textContent = `„${q}”`;
   const tableWrap = document.getElementById('overview-search-table');
   const countsWrap = document.getElementById('overview-search-counts');
@@ -522,8 +567,10 @@ async function loadOverviewSearch(page = 1) {
     }
 
     renderPagination('overview-search-pagination', page, data.total, 50, loadOverviewSearch);
+    setOverviewSearching(false, `${fmt(data.total)} záznamov`);
   } catch (e) {
     if (e.name === 'AbortError') return;
+    setOverviewSearching(false);
     showToast('Chyba hľadania: ' + e.message, 'error');
     tableWrap.innerHTML = `<div class="empty-state" style="color:#ef4444">❌ ${esc(e.message)}</div>`;
   }
@@ -531,6 +578,7 @@ async function loadOverviewSearch(page = 1) {
 
 window.dismissSourceBanner = dismissSourceBanner;
 window.shareSearchLink = shareSearchLink;
+window.submitOverviewSearch = submitOverviewSearch;
 window.onOverviewSearchInput = onOverviewSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
@@ -2255,6 +2303,7 @@ function renderMapChips(kuList) {
 // ── Export all handlers to window object ───────────────────────────────────
 window.dismissSourceBanner = dismissSourceBanner;
 window.shareSearchLink = shareSearchLink;
+window.submitOverviewSearch = submitOverviewSearch;
 window.onOverviewSearchInput = onOverviewSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;

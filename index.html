@@ -77,15 +77,25 @@
       <div class="hero-content">
         <h1 class="hero-title">Neznámi vlastníci pôdy — SK</h1>
         <p class="hero-subtitle">Stav k 30.06.2026 · Databáza Slovenského pozemkového fondu</p>
-        <div class="hero-search">
-          <span class="search-icon">🔍</span>
-          <input type="text" class="search-input" id="overview-search"
-                 placeholder="Hľadaj meno alebo obec / k.ú. (napr. Kuzmiak, Sulín)…"
-                 oninput="onOverviewSearchInput(this.value)"
-                 onkeydown="onOverviewSearchKeydown(event)">
-          <button class="btn btn-ghost" type="button" onclick="shareSearchLink()" title="Kopírovať odkaz na toto hľadanie">↗ Zdieľať</button>
-          <button class="btn btn-ghost" type="button" onclick="clearOverviewSearch()">Zrušiť</button>
-        </div>
+        <form class="hero-search" id="overview-search-form" onsubmit="submitOverviewSearch(event)">
+          <div class="hero-search-field">
+            <input type="search" class="search-input" id="overview-search"
+                   placeholder="Meno alebo obec / k.ú."
+                   enterkeyhint="search" inputmode="search"
+                   autocomplete="off" autocorrect="off" spellcheck="false"
+                   oninput="onOverviewSearchInput(this.value)"
+                   onkeydown="onOverviewSearchKeydown(event)">
+            <button type="submit" class="hero-search-go" id="overview-search-go" aria-label="Hľadať">
+              <span class="hero-search-go-icon">🔍</span>
+              <span class="hero-search-go-spin" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="hero-search-actions">
+            <button class="btn btn-ghost" type="button" onclick="shareSearchLink()" title="Kopírovať odkaz">↗ Zdieľať</button>
+            <button class="btn btn-ghost" type="button" onclick="clearOverviewSearch()">Zrušiť</button>
+          </div>
+          <p class="hero-search-status" id="overview-search-status" hidden>Hľadám v registri…</p>
+        </form>
         <div class="stat-grid" id="stats-grid">
           <div class="stat-card animate-in">
             <div class="stat-label">Neznámi vlastníci</div>
