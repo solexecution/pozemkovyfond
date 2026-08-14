@@ -318,6 +318,7 @@ function setOverviewSearching(on, msg) {
   const status = document.getElementById('overview-search-status');
   const btn = document.getElementById('overview-search-go');
   if (form) form.classList.toggle('searching', !!on);
+  document.body.classList.toggle('search-mode', !!on || (document.getElementById('overview-search')?.value || '').trim().length >= 2);
   if (btn) btn.disabled = !!on;
   if (status) {
     if (on) {
@@ -382,6 +383,7 @@ function clearOverviewSearch() {
   ovSearch.fKu = '';
   writeSearchUrl('');
   setOverviewSearching(false);
+  document.body.classList.remove('search-mode');
   const card = document.getElementById('overview-search-card');
   if (card) card.hidden = true;
 }
@@ -2333,15 +2335,18 @@ async function boot() {
     showSourceBannerIfNeeded();
     const sharedQ = searchQueryFromUrl();
     tabLoaded['overview'] = true;
-    loadOverview();
     if (sharedQ.length >= 2) {
       const input = document.getElementById('overview-search');
       if (input) input.value = sharedQ;
       ovSearch.q = sharedQ;
+      document.body.classList.add('search-mode');
       showTab('overview');
-      loadOverviewSearch(1);
+      setOverviewSearching(true, `Hľadám „${sharedQ}“…`);
+      await loadOverviewSearch(1);
+      loadOverview();
     } else {
       showTab('map');
+      loadOverview();
     }
   } catch (e) {
     console.error(e);

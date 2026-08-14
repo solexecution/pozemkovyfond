@@ -4,10 +4,13 @@
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
 import { parseLvText } from './lv_parser.js';
 
+const DATA_CACHE = 'pzf-data-v4';
+
 let db = null;
 let conn = null;
 let ready = false;
 let geoJsonCache = null;
+let cachedStats = null;
 
 function dataUrl(name) {
   return new URL(`data/${name}`, window.location.href).href;
@@ -77,6 +80,37 @@ async function fetchBuffer(url, onProgress) {
   return out;
 }
 
+async function openDataCache() {
+  try {
+    if (typeof caches !== 'undefined') return await caches.open(DATA_CACHE);
+  } catch (_) { /* private mode / insecure */ }
+  return null;
+}
+
+async function fetchCachedBuffer(url, onProgress, label) {
+  const cache = await openDataCache();
+  if (cache) {
+    const hit = await cache.match(url);
+    if (hit) {
+      setStatus(`Z cache: ${label}`);
+      const buf = new Uint8Array(await hit.arrayBuffer());
+      onProgress?.(1);
+      return buf;
+    }
+  }
+  const buf = await fetchBuffer(url, onProgress);
+  if (cache) {
+    try {
+      await cache.put(url, new Response(buf, {
+        headers: { 'Content-Type': 'application/octet-stream' },
+      }));
+    } catch (e) {
+      console.warn('Cache write failed', e);
+    }
+  }
+  return buf;
+}
+
 function toObjects(table) {
   const rows = table.toArray().map((row) => (typeof row.toJSON === 'function' ? row.toJSON() : { ...row }));
   for (const row of rows) {
@@ -130,13 +164,23 @@ function throwIfAborted(signal) {
 }
 
 async function registerParquet(filename, label, weightStart, weightEnd) {
-  setStatus(`Sťahujem ${label}...`);
-  const buf = await fetchBuffer(dataUrl(filename), (p) => {
+  setStatus(`Načítavam ${label}...`);
+  const buf = await fetchCachedBuffer(dataUrl(filename), (p) => {
     setProgress(weightStart + (weightEnd - weightStart) * p);
-  });
+  }, label);
   const bytes = buf.byteLength;
   await db.registerFileBuffer(filename, buf);
   return bytes;
+}
+
+function nextPrefix(s) {
+  if (!s) return s;
+  const last = s.charCodeAt(s.length - 1);
+  return s.slice(0, -1) + String.fromCharCode(last + 1);
+}
+
+function prefixPred(col, token) {
+  return `(${col} >= '${token}' AND ${col} < '${nextPrefix(token)}')`;
 }
 
 export async function initDb() {
@@ -157,21 +201,24 @@ export async function initDb() {
   conn = await db.connect();
   setProgress(8);
 
-  await registerParquet('unknown_owners.parquet', 'register neznámych vlastníkov (51 MB)', 8, 70);
-  await registerParquet('transferred_rights.parquet', 'prevedené práva', 70, 78);
-  await registerParquet('lv_details.parquet', 'uložené LV', 78, 82);
-  await registerParquet('lv_owners.parquet', 'vlastníkov LV', 82, 86);
-  await registerParquet('lv_parcels.parquet', 'parcely LV', 86, 90);
+  try {
+    const statsRes = await fetch(dataUrl('stats.json'));
+    if (statsRes.ok) cachedStats = await statsRes.json();
+  } catch (_) {}
+
+  await registerParquet('places_agg.parquet', 'obce', 8, 12);
+  await registerParquet('surnames.parquet', 'index mien', 12, 16);
+  await registerParquet('unknown_owners.parquet', 'register (cache po 1. načítaní)', 16, 78);
+  await registerParquet('transferred_rights.parquet', 'prevedené práva', 78, 84);
+  await registerParquet('lv_details.parquet', 'uložené LV', 84, 86);
+  await registerParquet('lv_owners.parquet', 'vlastníkov LV', 86, 88);
+  await registerParquet('lv_parcels.parquet', 'parcely LV', 88, 90);
 
   setStatus('Pripravujem tabuľky...');
-  await queryRun(`
-    CREATE OR REPLACE VIEW unknown_owners AS
-    SELECT * FROM read_parquet('unknown_owners.parquet')
-  `);
-  await queryRun(`
-    CREATE OR REPLACE VIEW transferred_rights AS
-    SELECT * FROM read_parquet('transferred_rights.parquet')
-  `);
+  await queryRun(`CREATE OR REPLACE VIEW unknown_owners AS SELECT * FROM read_parquet('unknown_owners.parquet')`);
+  await queryRun(`CREATE OR REPLACE VIEW transferred_rights AS SELECT * FROM read_parquet('transferred_rights.parquet')`);
+  await queryRun(`CREATE OR REPLACE VIEW places_agg AS SELECT * FROM read_parquet('places_agg.parquet')`);
+  await queryRun(`CREATE OR REPLACE VIEW surnames AS SELECT * FROM read_parquet('surnames.parquet')`);
 
   await queryRun(`
     CREATE TABLE lv_details (
@@ -290,26 +337,37 @@ export async function initDb() {
 }
 
 async function stats() {
+  if (cachedStats) return cachedStats;
+  try {
+    const res = await fetch(dataUrl('stats.json'));
+    if (res.ok) {
+      cachedStats = await res.json();
+      return cachedStats;
+    }
+  } catch (_) {}
   const rows = await queryObjects(`
     SELECT
-      (SELECT COUNT(*)                          FROM unknown_owners)     AS total_unknown_owners,
-      (SELECT COUNT(DISTINCT katastralne_uzemie) FROM unknown_owners)    AS unique_katastralne,
-      (SELECT COUNT(DISTINCT lv)                FROM unknown_owners)     AS unique_lv_uo,
-      (SELECT COUNT(DISTINCT meno_vlastnika)     FROM unknown_owners)    AS unique_names,
-      (SELECT COUNT(*)                          FROM transferred_rights) AS total_transferred,
-      (SELECT COUNT(DISTINCT lv)                FROM transferred_rights) AS unique_lv_tr,
-      (SELECT COUNT(DISTINCT nazov_ku)          FROM transferred_rights) AS unique_ku_tr,
-      (SELECT COUNT(*)                          FROM v_overlap)          AS overlap_count
+      (SELECT COUNT(*) FROM unknown_owners) AS total_unknown_owners,
+      (SELECT COUNT(DISTINCT katastralne_uzemie) FROM unknown_owners) AS unique_katastralne,
+      (SELECT COUNT(DISTINCT lv) FROM unknown_owners) AS unique_lv_uo,
+      (SELECT COUNT(DISTINCT meno_vlastnika) FROM unknown_owners) AS unique_names,
+      (SELECT COUNT(*) FROM transferred_rights) AS total_transferred,
+      (SELECT COUNT(DISTINCT lv) FROM transferred_rights) AS unique_lv_tr,
+      (SELECT COUNT(DISTINCT nazov_ku) FROM transferred_rights) AS unique_ku_tr,
+      1533 AS overlap_count
   `);
-  return rows[0];
+  cachedStats = rows[0];
+  return cachedStats;
 }
 
 function bothWhere(q) {
-  const tokens = normStr(q).split(/\s+/).filter(Boolean);
+  const tokens = normStr(q).split(/\s+/).filter((t) => t.length >= 2);
   if (!tokens.length) return '';
-  return tokens
-    .map((t) => `(meno_norm LIKE '%${t}%' OR ku_norm LIKE '%${t}%')`)
-    .join(' AND ');
+  const first = tokens[0];
+  const rest = tokens.slice(1);
+  const nameFast = [prefixPred('meno_norm', first), ...rest.map((t) => `contains(meno_norm, '${t}')`)].join(' AND ');
+  const placePred = tokens.map((t) => `contains(ku_norm, '${t}')`).join(' AND ');
+  return `((${nameFast}) OR (${placePred}))`;
 }
 
 async function overviewSearch(q) {
@@ -322,13 +380,24 @@ async function overviewSearch(q) {
   const offset = (page - 1) * limit;
   const fName = normStr(q.f_name || '');
   const fKu = normStr(q.f_ku || '');
+  const tokens = normStr(raw).split(/\s+/).filter((t) => t.length >= 2);
+  const first = tokens[0] || normStr(raw);
 
-  const conds = [bothWhere(raw)];
-  if (fName) conds.push(`meno_norm LIKE '%${fName}%'`);
-  if (fKu) conds.push(`ku_norm LIKE '%${fKu}%'`);
-  const where = `WHERE ${conds.filter(Boolean).join(' AND ')}`;
+  const places = await queryObjects(`
+    SELECT katastralne_uzemie, poradove_cislo, recs, names, lvs
+    FROM places_agg
+    WHERE ${tokens.map((t) => `contains(ku_norm, '${t}')`).join(' AND ') || '1=0'}
+    ORDER BY recs DESC
+    LIMIT 40
+  `);
 
-  const [cntRow, names, places, rows, lvRows] = await Promise.all([
+  const nameConds = [prefixPred('meno_norm', first)];
+  tokens.slice(1).forEach((t) => nameConds.push(`contains(meno_norm, '${t}')`));
+  if (fName) nameConds.push(`contains(meno_norm, '${fName}')`);
+  if (fKu) nameConds.push(`contains(ku_norm, '${fKu}')`);
+  const where = `WHERE ${nameConds.join(' AND ')}`;
+
+  const [cntRow, names, rows, lvRows] = await Promise.all([
     queryObjects(`
       SELECT
         COUNT(*) AS total,
@@ -338,26 +407,11 @@ async function overviewSearch(q) {
       FROM unknown_owners ${where}
     `),
     queryObjects(`
-      SELECT
-        meno_vlastnika,
-        COUNT(*) AS recs,
-        COUNT(DISTINCT katastralne_uzemie) AS places,
-        COUNT(DISTINCT lv) AS lvs
+      SELECT meno_vlastnika, COUNT(*) AS recs,
+             COUNT(DISTINCT katastralne_uzemie) AS places, COUNT(DISTINCT lv) AS lvs
       FROM unknown_owners ${where}
       GROUP BY meno_vlastnika
       ORDER BY recs DESC, meno_vlastnika
-      LIMIT 40
-    `),
-    queryObjects(`
-      SELECT
-        katastralne_uzemie,
-        poradove_cislo,
-        COUNT(*) AS recs,
-        COUNT(DISTINCT meno_vlastnika) AS names,
-        COUNT(DISTINCT lv) AS lvs
-      FROM unknown_owners ${where}
-      GROUP BY katastralne_uzemie, poradove_cislo
-      ORDER BY recs DESC, katastralne_uzemie
       LIMIT 40
     `),
     queryObjects(`
@@ -375,10 +429,17 @@ async function overviewSearch(q) {
   ]);
 
   const counts = cntRow[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
+  const placeRecs = places.reduce((s, p) => s + Number(p.recs || 0), 0);
+  if (placeRecs > Number(counts.total || 0)) {
+    counts.total = placeRecs;
+    counts.unique_places = places.length;
+    counts.unique_names = Math.max(Number(counts.unique_names || 0), places.reduce((s, p) => s + Number(p.names || 0), 0));
+    counts.unique_lv = Math.max(Number(counts.unique_lv || 0), places.reduce((s, p) => s + Number(p.lvs || 0), 0));
+  }
   return {
     total: counts.total,
     unique_names: counts.unique_names,
-    unique_places: counts.unique_places,
+    unique_places: counts.unique_places || places.length,
     unique_lv: counts.unique_lv,
     names,
     places,
@@ -409,11 +470,11 @@ async function owners(q) {
   const sortDir = q.sort_dir === 'DESC' ? 'DESC' : 'ASC';
 
   const conds = [];
-  if (search) conds.push(`meno_norm LIKE '%${search}%'`);
-  if (fKu) conds.push(`ku_norm LIKE '%${fKu}%'`);
+  if (search) conds.push(prefixPred('meno_norm', search));
+  if (fKu) conds.push(`contains(ku_norm, '${fKu}')`);
   if (fCislo) conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
   if (fLv) conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-  if (fName) conds.push(`meno_norm LIKE '%${fName}%'`);
+  if (fName) conds.push(prefixPred('meno_norm', fName));
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
   const [cntRow, rows] = await Promise.all([

@@ -18,7 +18,7 @@
     <p id="boot-msg">Inicializujem DuckDB WASM...</p>
     <div class="boot-bar"><div id="boot-bar-fill"></div></div>
     <p id="boot-pct">0 %</p>
-    <p class="boot-hint">Prvé načítanie stiahne register (~51 MB) a beží priamo v prehliadači.</p>
+    <p class="boot-hint">Prvé načítanie stiahne register (~63 MB). Ďalšie obnovenia idú z cache v prehliadači.</p>
   </div>
 </div>
 
@@ -96,6 +96,32 @@
           </div>
           <p class="hero-search-status" id="overview-search-status" hidden>Hľadám v registri…</p>
         </form>
+      </div>
+    </div>
+
+    <div class="card animate-in" id="overview-search-card" hidden>
+      <div class="card-title">
+        Výsledky hľadania
+        <span id="overview-search-label"></span>
+      </div>
+      <div class="stat-grid ov-search-stats" id="overview-search-counts"></div>
+      <div class="grid-2" style="margin:1.25rem 0">
+        <div>
+          <div class="card-title" style="margin-bottom:.75rem">Unikátne mená</div>
+          <div class="table-wrap" id="overview-names-wrap"></div>
+        </div>
+        <div>
+          <div class="card-title" style="margin-bottom:.75rem">Obce / katast. územia</div>
+          <div class="table-wrap" id="overview-places-wrap"></div>
+        </div>
+      </div>
+      <div id="overview-search-bulk"></div>
+      <div class="table-wrap" id="overview-search-table"></div>
+      <div class="pagination" id="overview-search-pagination"></div>
+    </div>
+
+    <div class="hero animate-in" id="global-stats-hero">
+      <div class="hero-content">
         <div class="stat-grid" id="stats-grid">
           <div class="stat-card animate-in">
             <div class="stat-label">Neznámi vlastníci</div>
@@ -129,27 +155,6 @@
           </div>
         </div>
       </div>
-    </div>
-
-    <div class="card animate-in" id="overview-search-card" hidden>
-      <div class="card-title">
-        Výsledky hľadania
-        <span id="overview-search-label"></span>
-      </div>
-      <div class="stat-grid ov-search-stats" id="overview-search-counts"></div>
-      <div class="grid-2" style="margin:1.25rem 0">
-        <div>
-          <div class="card-title" style="margin-bottom:.75rem">Unikátne mená</div>
-          <div class="table-wrap" id="overview-names-wrap"></div>
-        </div>
-        <div>
-          <div class="card-title" style="margin-bottom:.75rem">Obce / katast. územia</div>
-          <div class="table-wrap" id="overview-places-wrap"></div>
-        </div>
-      </div>
-      <div id="overview-search-bulk"></div>
-      <div class="table-wrap" id="overview-search-table"></div>
-      <div class="pagination" id="overview-search-pagination"></div>
     </div>
 
     <!-- Charts row 1 -->
