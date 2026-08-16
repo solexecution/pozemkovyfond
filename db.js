@@ -113,14 +113,48 @@ async function waitForFirstDownloadConsent() {
   });
 }
 
-async function fetchBuffer(url, onProgress) {
-  const res = await fetch(url);
+function isReloadNavigation() {
+  try {
+    const nav = performance.getEntriesByType?.('navigation')?.[0];
+    if (nav) return nav.type === 'reload';
+    return performance.navigation?.type === 1;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function isCachedResponseStale(url, hit) {
+  if (!isReloadNavigation()) return false;
+  try {
+    const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (!head.ok) return false;
+    const remoteLen = head.headers.get('content-length');
+    const cachedLen = hit.headers.get('X-Pzf-Size') || hit.headers.get('Content-Length');
+    if (remoteLen && cachedLen && remoteLen !== cachedLen) return true;
+    const remoteEtag = head.headers.get('etag');
+    const cachedEtag = hit.headers.get('ETag');
+    if (remoteEtag && cachedEtag && remoteEtag !== cachedEtag) return true;
+    const remoteLm = head.headers.get('last-modified');
+    const cachedLm = hit.headers.get('Last-Modified');
+    if (remoteLm && cachedLm && remoteLm !== cachedLm) return true;
+    if (remoteLen && !cachedLen) {
+      const size = (await hit.clone().blob()).size;
+      if (String(size) !== remoteLen) return true;
+    }
+  } catch (_) { /* HEAD unsupported — keep cache */ }
+  return false;
+}
+
+async function fetchBuffer(url, onProgress, fetchOpts = {}) {
+  const res = await fetch(url, fetchOpts);
   if (!res.ok) throw new Error(`Nepodarilo sa stiahnuť ${url} (${res.status})`);
+  const etag = res.headers.get('etag') || '';
+  const lastModified = res.headers.get('last-modified') || '';
   const total = Number(res.headers.get('content-length')) || 0;
   if (!res.body) {
     const buf = new Uint8Array(await res.arrayBuffer());
     onProgress?.(1);
-    return buf;
+    return { buf, etag, lastModified, size: buf.byteLength };
   }
   const reader = res.body.getReader();
   const chunks = [];
@@ -139,7 +173,7 @@ async function fetchBuffer(url, onProgress) {
     offset += chunk.length;
   }
   onProgress?.(1);
-  return out;
+  return { buf: out, etag, lastModified, size: out.byteLength };
 }
 
 async function openDataCache() {
@@ -153,19 +187,28 @@ async function fetchCachedBuffer(url, onProgress, label) {
   const cache = await openDataCache();
   if (cache) {
     const hit = await cache.match(url);
-    if (hit) {
+    if (hit && !(await isCachedResponseStale(url, hit))) {
       setStatus(`Z cache: ${label}`);
       const buf = new Uint8Array(await hit.arrayBuffer());
       onProgress?.(1);
       return buf;
     }
+    if (hit) setStatus(`Obnovujem ${label}…`);
   }
-  const buf = await fetchBuffer(url, onProgress);
+  const { buf, etag, lastModified, size } = await fetchBuffer(
+    url,
+    onProgress,
+    isReloadNavigation() ? { cache: 'no-store' } : {}
+  );
   if (cache) {
     try {
-      await cache.put(url, new Response(buf, {
-        headers: { 'Content-Type': 'application/octet-stream' },
-      }));
+      const headers = {
+        'Content-Type': 'application/octet-stream',
+        'X-Pzf-Size': String(size),
+      };
+      if (etag) headers.ETag = etag;
+      if (lastModified) headers['Last-Modified'] = lastModified;
+      await cache.put(url, new Response(buf, { headers }));
     } catch (e) {
       console.warn('Cache write failed', e);
     }
@@ -263,6 +306,24 @@ function throwIfAborted(signal) {
   }
 }
 
+let searchTail = Promise.resolve();
+let searchSeq = 0;
+
+function coalesceSearch(signal, fn) {
+  const seq = ++searchSeq;
+  const run = searchTail.then(async () => {
+    throwIfAborted(signal);
+    if (seq !== searchSeq) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    return fn();
+  });
+  searchTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 async function registerParquet(filename, label, weightStart, weightEnd) {
   setStatus(`Načítavam ${label}...`);
   const buf = await fetchCachedBuffer(dataUrl(filename), (p) => {
@@ -304,7 +365,7 @@ export async function initDb() {
   setProgress(8);
 
   try {
-    const statsRes = await fetch(dataUrl('stats.json'));
+    const statsRes = await fetch(dataUrl('stats.json'), isReloadNavigation() ? { cache: 'no-store' } : {});
     if (statsRes.ok) cachedStats = await statsRes.json();
   } catch (_) {}
 
@@ -451,7 +512,7 @@ export async function initDb() {
 async function stats() {
   if (cachedStats) return cachedStats;
   try {
-    const res = await fetch(dataUrl('stats.json'));
+    const res = await fetch(dataUrl('stats.json'), isReloadNavigation() ? { cache: 'no-store' } : {});
     if (res.ok) {
       cachedStats = await res.json();
       return cachedStats;
@@ -483,22 +544,26 @@ function bothWhere(q) {
 
 async function overviewSearch(q) {
   const raw = (q.q || '').trim();
-  if (fold(raw).replace(/[^a-z0-9]/g, '').length < 2) {
+  const fKu = (q.f_ku || '').trim();
+  const qOk = fold(raw).replace(/[^a-z0-9]/g, '').length >= 2;
+  const kuOk = fold(fKu).replace(/[^a-z0-9]/g, '').length >= 2;
+  if (!qOk && !kuOk) {
     return { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0, names: [], places: [], rows: [], lvs: [], page: 1, limit: 50 };
   }
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
-  const offset = (page - 1) * limit;
   const fName = (q.f_name || '').trim();
-  const fKu = q.f_ku || '';
   const tokens = tokensOf(raw);
   const first = tokens[0] || fold(raw);
 
-  const placeWhere = tokenPred('ku_norm', raw, { prefixFirst: false });
+  const placeQuery = fKu || raw;
+  const placeWhere = tokenPred('ku_norm', placeQuery, { prefixFirst: false });
   const places = placeWhere ? await queryObjects(`
-    SELECT katastralne_uzemie, poradove_cislo, recs, names, lvs
+    SELECT katastralne_uzemie,
+           SUM(recs) AS recs, SUM(names) AS names, SUM(lvs) AS lvs
     FROM places_agg
     WHERE ${placeWhere}
+    GROUP BY katastralne_uzemie
     ORDER BY recs DESC
     LIMIT 40
   `) : [];
@@ -515,21 +580,25 @@ async function overviewSearch(q) {
     : { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
 
   const nameConds = [];
-  const namePred = tokenPred('meno_norm', raw);
-  if (namePred && !fKu) nameConds.push(namePred);
+  const namePred = qOk ? tokenPred('meno_norm', raw) : '';
+  if (namePred) nameConds.push(namePred);
   if (fName) nameConds.push(foldedNamePred([fName]));
   const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
   if (kuPred) nameConds.push(kuPred);
   const where = nameConds.length ? `WHERE ${nameConds.join(' AND ')}` : 'WHERE 1=0';
 
   const names = await queryObjects(`
-    WITH mine AS (
-      SELECT u.meno_vlastnika, u.katastralne_uzemie, u.poradove_cislo, u.lv,
-             COALESCE(c.names_on_lv, 1) AS names_on_lv
-      FROM unknown_owners u
-      LEFT JOIN lv_co c
-        ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
+    WITH hits AS (
+      SELECT meno_vlastnika, katastralne_uzemie, poradove_cislo, lv
+      FROM unknown_owners
       ${where}
+    ),
+    mine AS (
+      SELECT h.meno_vlastnika, h.katastralne_uzemie, h.poradove_cislo, h.lv,
+             COALESCE(c.names_on_lv, 1) AS names_on_lv
+      FROM hits h
+      LEFT JOIN lv_co c
+        ON h.poradove_cislo = c.poradove_cislo AND h.lv = c.lv
     ),
     by_ku AS (
       SELECT
@@ -577,27 +646,16 @@ async function overviewSearch(q) {
     LIMIT 40
   `);
 
-  const rows = await queryObjects(`
-    SELECT id, katastralne_uzemie, poradove_cislo, lv, meno_vlastnika
-    FROM unknown_owners ${where}
-    ORDER BY meno_norm
-    LIMIT ${limit} OFFSET ${offset}
-  `);
-
-  const lvs = rows
-    .filter((r) => r.lv && r.poradove_cislo)
-    .map((r) => ({ lv: r.lv, ku: r.poradove_cislo, kuName: r.katastralne_uzemie }));
-
   const placeRecs = places.reduce((s, p) => s + Number(p.recs || 0), 0);
   return {
-    total: Math.max(Number(surname.total || 0), placeRecs, rows.length),
+    total: Math.max(Number(surname.total || 0), placeRecs, names.length),
     unique_names: Number(surname.unique_names || names.length),
     unique_places: Math.max(Number(surname.unique_places || 0), places.length),
     unique_lv: Number(surname.unique_lv || 0),
     names,
     places,
-    rows,
-    lvs,
+    rows: [],
+    lvs: [],
     page,
     limit,
   };
@@ -616,6 +674,47 @@ function parseNameList(q) {
 
 function sqlNameIn(list) {
   return list.map((n) => `'${escSql(n)}'`).join(', ');
+}
+
+async function placeSearch(q) {
+  const raw = (q.q || '').trim();
+  const placeWhere = tokenPred('ku_norm', raw, { prefixFirst: false });
+  if (!placeWhere) return { rows: [] };
+  const rows = await queryObjects(`
+    SELECT katastralne_uzemie,
+           SUM(recs) AS recs, SUM(names) AS names, SUM(lvs) AS lvs
+    FROM places_agg
+    WHERE ${placeWhere}
+    GROUP BY katastralne_uzemie
+    ORDER BY recs DESC
+    LIMIT 12
+  `);
+  return { rows };
+}
+
+function nameWhisperPred(q) {
+  const toks = tokensOf(q);
+  if (!toks.length || toks[0].length < 2) return '';
+  const first = toks[0].replace(/'/g, "''");
+  const parts = [prefixPred('meno_norm', first)];
+  for (const t of toks.slice(1)) {
+    parts.push(`contains(meno_norm, ' ${t.replace(/'/g, "''")}')`);
+  }
+  return parts.join(' AND ');
+}
+
+async function nameSearch(q) {
+  const pred = nameWhisperPred((q.q || '').trim());
+  if (!pred) return { rows: [] };
+  const rows = await queryObjects(`
+    SELECT meno_vlastnika
+    FROM unknown_owners
+    WHERE ${pred}
+    GROUP BY meno_vlastnika
+    ORDER BY COUNT(*) DESC
+    LIMIT 48
+  `);
+  return { rows };
 }
 
 async function nameDistricts(q) {
@@ -651,6 +750,8 @@ async function nameKuDetail(q) {
   const ku = (q.ku || '').trim();
   if (!list.length || !ku) return { error: 'name and ku required' };
 
+  const kuClause = `(u.katastralne_uzemie = '${escSql(ku)}' OR u.ku_norm = '${normStr(ku)}')`;
+
   const lvs = await queryObjects(`
     WITH mine AS (
       SELECT u.lv, u.poradove_cislo, u.katastralne_uzemie, u.meno_vlastnika,
@@ -659,7 +760,7 @@ async function nameKuDetail(q) {
       LEFT JOIN lv_co c
         ON u.poradove_cislo = c.poradove_cislo AND u.lv = c.lv
       WHERE ${foldedNamePred(list)}
-        AND (u.katastralne_uzemie = '${escSql(ku)}' OR u.ku_norm = '${normStr(ku)}')
+        AND ${kuClause}
     )
     SELECT
       lv,
@@ -1217,7 +1318,13 @@ export async function apiRequest(path, options = {}) {
       result = await queryObjects(`SELECT * FROM v_alpha_distribution`);
       break;
     case 'overview-search':
-      result = await overviewSearch(q);
+      result = await coalesceSearch(options.signal, () => overviewSearch(q));
+      break;
+    case 'place-search':
+      result = await placeSearch(q);
+      break;
+    case 'name-search':
+      result = await coalesceSearch(options.signal, () => nameSearch(q));
       break;
     case 'name-districts':
       result = await nameDistricts(q);

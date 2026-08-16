@@ -24,6 +24,53 @@ Chart.defaults.font.size   = 11;
 Chart.defaults.plugins.legend.labels.boxWidth = 12;
 Chart.defaults.plugins.legend.labels.usePointStyle = true;
 
+const THEME_KEY = 'pzf-theme';
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function applyChartTheme(theme) {
+  if (typeof Chart === 'undefined') return;
+  Chart.defaults.color = theme === 'light' ? '#475569' : '#8b95a8';
+  Chart.defaults.borderColor = theme === 'light' ? '#e2e8f0' : '#252a38';
+  document.querySelectorAll('canvas').forEach((canvas) => {
+    const chart = Chart.getChart?.(canvas);
+    if (!chart) return;
+    chart.options.color = Chart.defaults.color;
+    chart.update('none');
+  });
+}
+
+function applyTheme(theme, persist = true) {
+  const next = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  if (persist) {
+    try { localStorage.setItem(THEME_KEY, next); } catch (_) { /* private mode */ }
+  }
+  applyChartTheme(next);
+  applyMapTheme(next);
+  const btn = document.getElementById('theme-toggle');
+  if (btn) {
+    const toLight = next === 'dark';
+    btn.setAttribute('aria-label', toLight ? 'Zapnúť svetlý motív' : 'Zapnúť tmavý motív');
+    btn.title = toLight ? 'Svetlý motív' : 'Tmavý motív';
+  }
+}
+
+function toggleTheme() {
+  applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+}
+window.toggleTheme = toggleTheme;
+
+applyChartTheme(currentTheme());
+try {
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+    try { if (localStorage.getItem(THEME_KEY)) return; } catch (_) { /* ignore */ }
+    applyTheme(e.matches ? 'light' : 'dark', false);
+  });
+} catch (_) { /* ignore */ }
+
 const PALETTE = [
   '#3b82f6','#6366f1','#8b5cf6','#ec4899',
   '#06b6d4','#10b981','#f59e0b','#ef4444',
@@ -307,16 +354,7 @@ function toggleRegMenu() {
 }
 function goHome() {
   closeRegMenu();
-  showTab('overview');
-  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
-  if (q.length >= 2) {
-    document.body.classList.add('search-mode');
-    document.body.classList.remove('landing-mode');
-  } else {
-    document.body.classList.add('landing-mode');
-    document.body.classList.remove('search-mode');
-    document.getElementById('overview-search')?.focus();
-  }
+  clearOverviewSearch();
 }
 function showTab(name) {
   closeRegMenu();
@@ -353,6 +391,7 @@ window.toggleRegMenu = toggleRegMenu;
 window.goHome = goHome;
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#reg-wrap')) closeRegMenu();
+  if (!e.target.closest('#overview-place, #header-place, #overview-search, #header-search, .whisper')) hideWhisper();
 });
 
 // ── DB Status ──────────────────────────────────────────────────────────────
@@ -497,6 +536,7 @@ const ovSearch = {
   page: 1,
   fName: '',
   fKu: '',
+  placeQ: '',
   pickName: '',
   pickKu: '',
   names: [],
@@ -591,6 +631,23 @@ function syncSearchInputs(val, source) {
   if (ov && source !== 'overview' && ov.value !== val) ov.value = val;
   if (hd && source !== 'header' && hd.value !== val) hd.value = val;
 }
+function syncPlaceInputs(val, source) {
+  const ov = document.getElementById('overview-place');
+  const hd = document.getElementById('header-place');
+  if (ov && source !== 'overview' && ov.value !== val) ov.value = val;
+  if (hd && source !== 'header' && hd.value !== val) hd.value = val;
+}
+function currentPlaceQuery() {
+  return (document.getElementById('overview-place')?.value
+    || document.getElementById('header-place')?.value
+    || ovSearch.placeQ
+    || ovSearch.fKu
+    || '').trim();
+}
+function hasSearchQuery() {
+  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+  return q.length >= 2 || currentPlaceQuery().length >= 2;
+}
 function setWizardStep(step) {
   ovSearch.step = step;
   const names = document.getElementById('step-names');
@@ -611,7 +668,7 @@ function renderCrumb() {
   if (!el) return;
   const q = ovSearch.q || '';
   const bits = [
-    `<li><button type="button" class="crumb-btn" onclick="wizardBackToNames()">${q ? `„${esc(q)}”` : 'Hľadanie'}</button></li>`,
+    `<li><button type="button" class="crumb-btn" onclick="wizardBackToNames()">${q ? `„${esc(q)}”` : (ovSearch.fKu ? esc(ovSearch.fKu) : 'Hľadanie')}</button></li>`,
   ];
   if (ovSearch.pickName) {
     bits.push(`<li><button type="button" class="crumb-btn" onclick="wizardBackToPlaces()">${esc(ovSearch.pickName)}</button></li>`);
@@ -675,6 +732,9 @@ function writeSearchUrl(q, name, ku) {
   const url = new URL(location.href);
   if (q && q.length >= 2) url.searchParams.set('q', q);
   else url.searchParams.delete('q');
+  const place = ovSearch.fKu || ovSearch.placeQ || '';
+  if (place && place.length >= 2) url.searchParams.set('place', place);
+  else url.searchParams.delete('place');
   const n = name !== undefined ? name : ovSearch.pickName;
   const k = ku !== undefined ? ku : ovSearch.pickKu;
   if (n) url.searchParams.set('name', n);
@@ -682,7 +742,7 @@ function writeSearchUrl(q, name, ku) {
   if (k) url.searchParams.set('ku', k);
   else url.searchParams.delete('ku');
   history.replaceState(null, '', url);
-  const bits = [n, k, q].filter(Boolean);
+  const bits = [n, k, place, q].filter(Boolean);
   document.title = bits.length
     ? `${bits.join(' · ')} — PZF Explorer`
     : 'PZF Explorer — Neznámi vlastníci';
@@ -690,12 +750,13 @@ function writeSearchUrl(q, name, ku) {
 
 function shareSearchLink() {
   const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
-  if (q.length < 2) {
+  const place = currentPlaceQuery();
+  if (q.length < 2 && place.length < 2) {
     showToast('Najprv zadajte meno alebo obec (min. 2 znaky).', 'info');
     return;
   }
   writeSearchUrl(q);
-  track('share', { q, name: ovSearch.pickName, ku: ovSearch.pickKu });
+  track('share', { q, place, name: ovSearch.pickName, ku: ovSearch.pickKu });
   const link = location.href;
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(link).then(
@@ -731,7 +792,6 @@ function beginSearch(q, source) {
   ovSearch.q = q;
   ovSearch.page = 1;
   ovSearch.fName = '';
-  ovSearch.fKu = '';
   ovSearch.pickName = '';
   ovSearch.pickKu = '';
   ovSearch.holdNames = false;
@@ -748,48 +808,32 @@ function submitOverviewSearch(e) {
     || ovSearch.q
     || ''
   ).trim();
+  const place = currentPlaceQuery();
   beginSearch(q);
+  ovSearch.placeQ = place;
+  ovSearch.fKu = place;
+  hideWhisper();
   clearTimeout(_ovTimer);
-  if (q.length < 2) {
-    setOverviewSearching(false, 'Zadajte aspoň 2 znaky.');
+  if (q.length < 2 && place.length < 2) {
+    setOverviewSearching(false, 'Zadajte meno alebo obec (aspoň 2 znaky).');
     return;
   }
   document.getElementById('overview-search')?.blur();
   document.getElementById('header-search')?.blur();
+  document.getElementById('overview-place')?.blur();
+  document.getElementById('header-place')?.blur();
   showTab('overview');
   setOverviewSearching(true, 'Hľadám v registri…');
   loadOverviewSearch(1);
 }
 
-function onOverviewSearchInput(val) {
-  syncSearchInputs(val, 'overview');
-  ovSearch.q = val;
+function scheduleOverviewSearch(source) {
   clearTimeout(_ovTimer);
-  if (val.trim().length < 2) {
+  if (!hasSearchQuery()) {
     setOverviewSearching(false);
     const card = document.getElementById('overview-search-card');
     if (card) card.hidden = true;
-    document.body.classList.add('landing-mode');
-    document.body.classList.remove('search-mode');
-    applyMapSearchFilter({ fit: true, force: true });
-    return;
-  }
-  _ovTimer = setTimeout(() => {
-    beginSearch(val, 'overview');
-    setOverviewSearching(true, 'Hľadám…');
-    loadOverviewSearch(1);
-  }, SEARCH_DEBOUNCE_MS);
-}
-
-function onHeaderSearchInput(val) {
-  syncSearchInputs(val, 'header');
-  ovSearch.q = val;
-  clearTimeout(_ovTimer);
-  if (val.trim().length < 2) {
-    setOverviewSearching(false);
-    const card = document.getElementById('overview-search-card');
-    if (card) card.hidden = true;
-    if (!document.body.classList.contains('register-view')) {
+    if (source !== 'header' || !document.body.classList.contains('register-view')) {
       document.body.classList.add('landing-mode');
       document.body.classList.remove('search-mode');
     }
@@ -797,15 +841,35 @@ function onHeaderSearchInput(val) {
     return;
   }
   _ovTimer = setTimeout(() => {
-    beginSearch(val, 'header');
-    const onMap = document.getElementById('tab-map')?.classList.contains('active');
-    if (!onMap) showTab('overview');
+    const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+    const place = currentPlaceQuery();
+    beginSearch(q, source);
+    ovSearch.placeQ = place;
+    ovSearch.fKu = place;
+    if (source === 'header') {
+      const onMap = document.getElementById('tab-map')?.classList.contains('active');
+      if (!onMap) showTab('overview');
+    }
     setOverviewSearching(true, 'Hľadám…');
     loadOverviewSearch(1);
   }, SEARCH_DEBOUNCE_MS);
 }
 
+function onOverviewSearchInput(val) {
+  syncSearchInputs(val, 'overview');
+  ovSearch.q = val;
+  scheduleNameWhisper(val, 'overview');
+}
+
+function onHeaderSearchInput(val) {
+  syncSearchInputs(val, 'header');
+  ovSearch.q = val;
+  scheduleNameWhisper(val, 'header');
+}
+
 function onOverviewSearchKeydown(e) {
+  const source = e.target?.id === 'header-search' ? 'header' : 'overview';
+  if (handleWhisperKey(e, 'name', source)) return;
   if (e.key === 'Enter') {
     e.preventDefault();
     submitOverviewSearch(e);
@@ -813,11 +877,278 @@ function onOverviewSearchKeydown(e) {
   if (e.key === 'Escape') clearOverviewSearch();
 }
 
+const whisper = {
+  name: { idx: -1, rows: [], controller: null },
+  place: { idx: -1, rows: [], controller: null },
+};
+let _nameWhisperTimer = null;
+
+function whisperDd(kind, source) {
+  if (kind === 'place') {
+    return document.getElementById(source === 'header' ? 'header-place-dd' : 'overview-place-dd');
+  }
+  return document.getElementById(source === 'header' ? 'header-name-dd' : 'overview-name-dd');
+}
+
+function hideWhisper(kind) {
+  const ids = kind === 'place'
+    ? ['overview-place-dd', 'header-place-dd']
+    : kind === 'name'
+      ? ['overview-name-dd', 'header-name-dd']
+      : ['overview-place-dd', 'header-place-dd', 'overview-name-dd', 'header-name-dd'];
+  ids.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) { el.hidden = true; el.innerHTML = ''; }
+  });
+  const kinds = kind ? [kind] : ['name', 'place'];
+  for (const k of kinds) {
+    whisper[k].idx = -1;
+    whisper[k].rows = [];
+  }
+}
+
+function hidePlaceSuggest() {
+  hideWhisper('place');
+}
+
+function whisperPrefixLen(display, foldedPrefix) {
+  let i = 0;
+  let fi = 0;
+  while (i < display.length && fi < foldedPrefix.length) {
+    const f = fold(display[i]);
+    if (!f) { i += 1; continue; }
+    if (!foldedPrefix.startsWith(f, fi)) break;
+    fi += f.length;
+    i += 1;
+  }
+  return fi >= foldedPrefix.length ? i : 0;
+}
+
+function nameMatchesWhisper(name, query) {
+  const ntoks = tokensOf(name);
+  const qtoks = tokensOf(query);
+  if (!qtoks.length) return false;
+  const used = new Set();
+  for (const qt of qtoks) {
+    const idx = ntoks.findIndex((nt, i) => !used.has(i) && nt.startsWith(qt));
+    if (idx < 0) return false;
+    used.add(idx);
+  }
+  return true;
+}
+
+function whisperNameScore(name, query) {
+  const ntoks = tokensOf(name);
+  const qtoks = tokensOf(query);
+  if (!qtoks.length) return 0;
+  let score = 0;
+  const used = new Set();
+  for (const qt of qtoks) {
+    const idx = ntoks.findIndex((nt, i) => !used.has(i) && nt.startsWith(qt));
+    if (idx < 0) return -1;
+    used.add(idx);
+    score += ntoks[idx] === qt ? 120 : 50;
+    score -= idx * 4;
+  }
+  score -= Math.max(0, ntoks.length - qtoks.length) * 12;
+  if (ntoks[0] === qtoks[0]) score += 40;
+  return score;
+}
+
+function markWhisper(text, query) {
+  const qtoks = tokensOf(query);
+  if (!qtoks.length) return esc(text);
+  const used = new Set();
+  return String(text).replace(
+    /[A-Za-z0-9ÁáÄäČčĎďÉéÍíĽľĹĺŇňÓóÔôŔŕŠšŤťÚúÝýŽž]+|[^A-Za-z0-9ÁáÄäČčĎďÉéÍíĽľĹĺŇňÓóÔôŔŕŠšŤťÚúÝýŽž]+/g,
+    (chunk) => {
+      const folded = fold(chunk).replace(/[^a-z0-9]/g, '');
+      if (!folded) return esc(chunk);
+      let qi = -1;
+      for (let i = 0; i < qtoks.length; i++) {
+        if (used.has(i)) continue;
+        if (folded.startsWith(qtoks[i])) { qi = i; break; }
+      }
+      if (qi < 0) return `<span class="whisper-tail">${esc(chunk)}</span>`;
+      used.add(qi);
+      const n = whisperPrefixLen(chunk, qtoks[qi]);
+      const head = chunk.slice(0, n);
+      const tail = chunk.slice(n);
+      let html = `<span class="whisper-match">${esc(head)}</span>`;
+      if (tail) html += `<span class="whisper-tail">${esc(tail)}</span>`;
+      return html;
+    }
+  );
+}
+
+function uniqueWhisperNames(rows, query) {
+  const seen = new Set();
+  const scored = [];
+  for (const r of rows || []) {
+    const clean = cleanPersonName(r.meno_vlastnika);
+    const k = nameKey(clean);
+    if (!k || seen.has(k)) continue;
+    if (!nameMatchesWhisper(clean, query)) continue;
+    seen.add(k);
+    scored.push({ name: clean, score: whisperNameScore(clean, query) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 8).map((x) => x.name);
+}
+
+function renderWhisper(kind, rows, source, query, pickFn, labelOf) {
+  const dd = whisperDd(kind, source);
+  if (!dd) return;
+  const st = whisper[kind];
+  st.rows = rows || [];
+  st.idx = st.rows.length ? 0 : -1;
+  if (!st.rows.length) {
+    dd.hidden = true;
+    dd.innerHTML = '';
+    return;
+  }
+  dd.hidden = false;
+  dd.innerHTML = st.rows.map((r, i) => {
+    const label = labelOf(r);
+    return `<button type="button" class="${i === 0 ? 'active' : ''}" data-idx="${i}"
+            onmousedown="${pickFn}('${jsAttr(label)}')">
+      ${markWhisper(label, query)}
+    </button>`;
+  }).join('');
+}
+
+function renderPlaceSuggest(rows, source) {
+  const typed = (source === 'header'
+    ? document.getElementById('header-place')?.value
+    : document.getElementById('overview-place')?.value) || ovSearch.placeQ || '';
+  renderWhisper('place', rows, source, typed, 'pickPlaceSuggest', (r) => r.katastralne_uzemie);
+}
+
+function renderNameSuggest(names, source) {
+  const typed = (source === 'header'
+    ? document.getElementById('header-search')?.value
+    : document.getElementById('overview-search')?.value) || ovSearch.q || '';
+  renderWhisper('name', names, source, typed, 'pickNameSuggest', (n) => n);
+}
+
+function scheduleNameWhisper(val, source) {
+  clearTimeout(_nameWhisperTimer);
+  const q = (val || '').trim();
+  if (q.length < 3) {
+    hideWhisper('name');
+    return;
+  }
+  _nameWhisperTimer = setTimeout(() => fetchNameWhisper(q, source), 180);
+}
+
+async function fetchNameWhisper(q, source) {
+  const st = whisper.name;
+  if (st.controller) st.controller.abort();
+  st.controller = new AbortController();
+  const signal = st.controller.signal;
+  try {
+    const data = await apiFetch(`/name-search?q=${encodeURIComponent(q)}`, { signal }).then((r) => r.json());
+    if (signal.aborted) return;
+    renderNameSuggest(uniqueWhisperNames(data.rows, q), source);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    hideWhisper('name');
+  }
+}
+
+function whisperLabel(kind, row) {
+  if (kind === 'place') return typeof row === 'string' ? row : row.katastralne_uzemie;
+  return typeof row === 'string' ? row : row.meno_vlastnika;
+}
+
+function handleWhisperKey(e, kind, source) {
+  const st = whisper[kind];
+  const dd = whisperDd(kind, source);
+  if (e.key === 'Escape' && st.rows.length && dd && !dd.hidden) {
+    hideWhisper(kind);
+    e.preventDefault();
+    return true;
+  }
+  if (e.key === 'Enter' && st.rows.length && dd && !dd.hidden) {
+    e.preventDefault();
+    const row = st.rows[Math.max(0, st.idx)] || st.rows[0];
+    if (!row) return true;
+    const label = whisperLabel(kind, row);
+    if (kind === 'place') pickPlaceSuggest(label);
+    else pickNameSuggest(label);
+    return true;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return false;
+  if (!st.rows.length || dd?.hidden) return false;
+  e.preventDefault();
+  const delta = e.key === 'ArrowDown' ? 1 : -1;
+  st.idx = (st.idx + delta + st.rows.length) % st.rows.length;
+  dd.querySelectorAll('button').forEach((btn, i) => btn.classList.toggle('active', i === st.idx));
+  return true;
+}
+
+async function onPlaceSearchInput(val, source) {
+  syncPlaceInputs(val, source);
+  ovSearch.placeQ = val;
+  ovSearch.fKu = val.trim();
+  const q = val.trim();
+  if (q.length < 2) {
+    hideWhisper('place');
+    return;
+  }
+  const st = whisper.place;
+  if (st.controller) st.controller.abort();
+  st.controller = new AbortController();
+  const signal = st.controller.signal;
+  try {
+    const data = await apiFetch(`/place-search?q=${encodeURIComponent(q)}`, { signal }).then((r) => r.json());
+    if (signal.aborted) return;
+    renderPlaceSuggest(data.rows || [], source);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    hideWhisper('place');
+  }
+}
+
+function onPlaceSearchKeydown(e, source) {
+  if (handleWhisperKey(e, 'place', source)) return;
+}
+
+function pickNameSuggest(name) {
+  ovSearch.q = name;
+  syncSearchInputs(name);
+  hideWhisper();
+  track('name_whisper', { q: name });
+  const place = currentPlaceQuery();
+  beginSearch(name);
+  ovSearch.placeQ = place;
+  ovSearch.fKu = place;
+  showTab('overview');
+  setOverviewSearching(true, `Hľadám ${name}…`);
+  loadOverviewSearch(1);
+}
+
+function pickPlaceSuggest(ku) {
+  ovSearch.fKu = ku;
+  ovSearch.placeQ = ku;
+  syncPlaceInputs(ku);
+  hideWhisper();
+  track('place_chip', { q: ovSearch.q, ku });
+  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+  beginSearch(q);
+  ovSearch.fKu = ku;
+  ovSearch.placeQ = ku;
+  showTab('overview');
+  setOverviewSearching(true, `Filtrujem ${ku}…`);
+  loadOverviewSearch(1);
+}
+
 function clearOverviewSearch() {
   ovSearch.q = '';
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.fKu = '';
+  ovSearch.placeQ = '';
   ovSearch.pickName = '';
   ovSearch.pickKu = '';
   ovSearch.names = [];
@@ -826,6 +1157,8 @@ function clearOverviewSearch() {
   ovSearch.holdNames = false;
   ovSearch.holdPlaces = false;
   syncSearchInputs('');
+  syncPlaceInputs('');
+  hideWhisper();
   writeSearchUrl('');
   setOverviewSearching(false);
   document.body.classList.remove('search-mode');
@@ -975,11 +1308,21 @@ function renderOverviewNames() {
   if (!namesWrap) return;
   const names = sortedOverviewNames();
   if (!names.length) {
-    namesWrap.innerHTML = '<div class="empty-state">Žiadne mená pre tento výraz. Skúste priezvisko, alebo zvoľte obec vyššie.</div>';
+    namesWrap.innerHTML = ovSearch.fKu
+      ? `<div class="empty-state">Žiadne mená v ${esc(ovSearch.fKu)} pre tento výraz. Skúste iné meno, alebo zrušte filter obce.</div>`
+      : '<div class="empty-state">Žiadne mená pre tento výraz. Skúste priezvisko, alebo zadajte obec.</div>';
     return;
   }
   const title = document.getElementById('step-names-title');
-  if (title) title.textContent = names.length === 1 ? 'Je to toto meno?' : `Ktoré meno? (${names.length})`;
+  if (title) {
+    if (ovSearch.fKu) {
+      title.textContent = names.length === 1
+        ? `Je to toto meno v ${ovSearch.fKu}?`
+        : `Ktoré meno v ${ovSearch.fKu}? (${names.length})`;
+    } else {
+      title.textContent = names.length === 1 ? 'Je to toto meno?' : `Ktoré meno? (${names.length})`;
+    }
+  }
   namesWrap.innerHTML = names.map((r) => {
     const ch = nameChance(r);
     const variants = (r.variants || []).filter((v) => nameKey(v) !== nameKey(r.meno_vlastnika) || v !== r.meno_vlastnika);
@@ -1020,12 +1363,13 @@ function renderPlacesStrip(places) {
     <button type="button" class="place-chip${ovSearch.fKu === r.katastralne_uzemie ? ' active' : ''}"
             onclick="onPickPlaceChip('${jsAttr(r.katastralne_uzemie)}')">
       ${esc(r.katastralne_uzemie)}
-      <span>${fmt(r.names)} mien · ${fmt(r.lvs)} LV</span>
     </button>`).join('');
 }
 
 function onPickPlaceChip(ku) {
   ovSearch.fKu = ovSearch.fKu === ku ? '' : ku;
+  ovSearch.placeQ = ovSearch.fKu;
+  syncPlaceInputs(ovSearch.fKu);
   ovSearch.pickName = '';
   ovSearch.pickKu = '';
   ovSearch.holdNames = false;
@@ -1071,13 +1415,25 @@ function resolvePickedName(wanted) {
 }
 
 async function loadOverviewSearch(page = 1) {
-  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+  const q = (
+    document.getElementById('overview-search')?.value
+    || ovSearch.q
+    || searchQueryFromUrl()
+    || ''
+  ).trim();
+  const place = (
+    currentPlaceQuery()
+    || new URLSearchParams(location.search).get('place')
+    || ''
+  ).trim();
   ovSearch.q = q;
+  ovSearch.placeQ = place;
+  if (place) ovSearch.fKu = place;
   ovSearch.page = page;
   const card = document.getElementById('overview-search-card');
   if (!card) return;
 
-  if (q.length < 2) {
+  if (q.length < 2 && place.length < 2) {
     card.hidden = true;
     writeSearchUrl('');
     setOverviewSearching(false);
@@ -1111,8 +1467,8 @@ async function loadOverviewSearch(page = 1) {
     if (data.error) throw new Error(data.error);
 
     ovSearch.names = groupCleanNames(data.names || []).filter((r) => {
-      if (ovSearch.fKu) return true;
-      return matchesFolded(r.meno_vlastnika, q) || matchesFolded(r.top_ku, q);
+      if (q.length >= 2) return matchesFolded(r.meno_vlastnika, q);
+      return true;
     });
     renderPlacesStrip(data.places || []);
     renderOverviewNames();
@@ -1187,13 +1543,23 @@ async function loadKuOptions(name, preferKu) {
   if (wrap) wrap.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Hľadám obce pre ${esc(name)}…</div>`;
   try {
     const data = await apiFetch(`/name-districts?names=${namesParam(name)}`).then((r) => r.json());
-    const rows = data.rows || [];
+    let rows = data.rows || [];
+    const loc = ovSearch.fKu || ovSearch.placeQ;
+    if (loc && loc.trim().length >= 2) {
+      const filtered = rows.filter((r) => matchesFolded(r.katastralne_uzemie, loc));
+      if (filtered.length) rows = filtered;
+    }
     ovSearch.districts = rows;
     renderPlaceCards(rows);
     applyMapSearchFilter();
+    const exact = loc
+      ? rows.find((r) => fold(r.katastralne_uzemie) === fold(loc))
+      : null;
     const pick = preferKu && rows.some((r) => r.katastralne_uzemie === preferKu)
       ? preferKu
-      : '';
+      : exact
+        ? exact.katastralne_uzemie
+        : '';
     if (pick) {
       await onPickKu(pick);
     } else if (rows.length === 1 && !ovSearch.holdPlaces) {
@@ -1412,6 +1778,10 @@ window.submitOverviewSearch = submitOverviewSearch;
 window.onOverviewSearchInput = onOverviewSearchInput;
 window.onHeaderSearchInput = onHeaderSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
+window.onPlaceSearchInput = onPlaceSearchInput;
+window.onPlaceSearchKeydown = onPlaceSearchKeydown;
+window.pickPlaceSuggest = pickPlaceSuggest;
+window.pickNameSuggest = pickNameSuggest;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
 window.showNameDistricts = showNameDistricts;
@@ -2803,6 +3173,7 @@ function setSampleQuery(name) {
 
 // ── GEOGRAPHIC MAP OF SLOVAKIA ENGINE ───────────────────────────────────────
 let skMap = null;
+let mapTileLayer = null;
 let mapMarkersGroup = null;
 let geoStatsData = null;
 
@@ -2901,12 +3272,7 @@ async function initSlovakiaMap() {
       zoomControl: true
     });
 
-    // CartoDB Dark Matter tile layer
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd',
-      maxZoom: 19
-    }).addTo(skMap);
+    applyMapTheme(currentTheme());
 
     mapMarkersGroup = L.layerGroup().addTo(skMap);
 
@@ -2968,32 +3334,49 @@ function mapFilterActive() {
 }
 
 function kuLayerStyle(feature, { match = false, active = false } = {}) {
+  const light = currentTheme() === 'light';
   const cnt = feature?.properties?.record_count || 0;
   if (!active) {
     return {
-      color: cnt > 0 ? '#60a5fa' : '#334155',
+      color: cnt > 0 ? (light ? '#2563eb' : '#60a5fa') : (light ? '#cbd5e1' : '#334155'),
       weight: cnt > 0 ? 1.5 : 0.6,
       opacity: cnt > 0 ? 0.9 : 0.3,
-      fillColor: cnt > 0 ? '#1d4ed8' : '#0f172a',
-      fillOpacity: cnt > 0 ? Math.min(0.5, 0.08 + (cnt / 50000) * 0.4) : 0.04,
+      fillColor: cnt > 0 ? (light ? '#3b82f6' : '#1d4ed8') : (light ? '#e2e8f0' : '#0f172a'),
+      fillOpacity: cnt > 0 ? Math.min(0.45, 0.08 + (cnt / 50000) * 0.35) : (light ? 0.22 : 0.04),
     };
   }
   if (match) {
     return {
-      color: '#34d399',
+      color: light ? '#059669' : '#34d399',
       weight: 2.2,
       opacity: 0.95,
-      fillColor: '#059669',
-      fillOpacity: cnt > 0 ? Math.min(0.55, 0.22 + (cnt / 50000) * 0.35) : 0.18,
+      fillColor: light ? '#10b981' : '#059669',
+      fillOpacity: cnt > 0 ? Math.min(0.5, 0.2 + (cnt / 50000) * 0.3) : 0.18,
     };
   }
   return {
-    color: '#334155',
+    color: light ? '#cbd5e1' : '#334155',
     weight: 0.5,
-    opacity: 0.15,
-    fillColor: '#0f172a',
-    fillOpacity: 0.03,
+    opacity: 0.2,
+    fillColor: light ? '#f1f5f9' : '#0f172a',
+    fillOpacity: light ? 0.12 : 0.03,
   };
+}
+
+function applyMapTheme(theme) {
+  if (!skMap || typeof L === 'undefined') return;
+  const light = theme === 'light';
+  const url = light
+    ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  if (mapTileLayer) skMap.removeLayer(mapTileLayer);
+  mapTileLayer = L.tileLayer(url, {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    subdomains: 'abcd',
+    maxZoom: 19,
+  }).addTo(skMap);
+  mapTileLayer.bringToBack();
+  if (geoJsonLayer) applyMapSearchFilter({ fit: false });
 }
 
 function mapChipItems(kus) {
@@ -3479,6 +3862,10 @@ window.submitOverviewSearch = submitOverviewSearch;
 window.onOverviewSearchInput = onOverviewSearchInput;
 window.onHeaderSearchInput = onHeaderSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
+window.onPlaceSearchInput = onPlaceSearchInput;
+window.onPlaceSearchKeydown = onPlaceSearchKeydown;
+window.pickPlaceSuggest = pickPlaceSuggest;
+window.pickNameSuggest = pickNameSuggest;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
 window.showNameDistricts = showNameDistricts;
@@ -3516,6 +3903,7 @@ window.setSampleQuery = setSampleQuery;
 window.initSlovakiaMap = initSlovakiaMap;
 window.onMapKuClick = onMapKuClick;
 window.applyMapSearchFilter = applyMapSearchFilter;
+window.toggleTheme = toggleTheme;
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function boot() {
@@ -3526,15 +3914,18 @@ async function boot() {
     const params = new URLSearchParams(location.search);
     ovSearch.pickName = (params.get('name') || '').trim();
     ovSearch.pickKu = (params.get('ku') || '').trim();
+    ovSearch.fKu = (params.get('place') || '').trim();
+    ovSearch.placeQ = ovSearch.fKu;
+    if (ovSearch.fKu) syncPlaceInputs(ovSearch.fKu);
     tabLoaded['overview'] = true;
     showTab('overview');
-    if (sharedQ.length >= 2 || ovSearch.pickName) {
+    if (sharedQ.length >= 2 || ovSearch.pickName || ovSearch.fKu.length >= 2) {
       const q = sharedQ || ovSearch.pickName;
       syncSearchInputs(q);
       ovSearch.q = q;
       document.body.classList.add('search-mode');
       document.body.classList.remove('landing-mode');
-      setOverviewSearching(true, `Hľadám „${q}“…`);
+      setOverviewSearching(true, `Hľadám…`);
       await loadOverviewSearch(1);
       loadOverview();
     } else {
@@ -3555,13 +3946,16 @@ async function boot() {
 window.addEventListener('popstate', () => {
   const params = new URLSearchParams(location.search);
   const q = searchQueryFromUrl();
+  const place = (params.get('place') || '').trim();
   syncSearchInputs(q);
+  syncPlaceInputs(place);
   ovSearch.q = q;
   ovSearch.fName = '';
-  ovSearch.fKu = '';
+  ovSearch.fKu = place;
+  ovSearch.placeQ = place;
   ovSearch.pickName = (params.get('name') || '').trim();
   ovSearch.pickKu = (params.get('ku') || '').trim();
-  if (q.length >= 2 || ovSearch.pickName) {
+  if (q.length >= 2 || place.length >= 2 || ovSearch.pickName) {
     showTab('overview');
     loadOverviewSearch(1);
   } else {
@@ -3572,6 +3966,8 @@ window.addEventListener('popstate', () => {
     document.title = 'PZF Explorer — Neznámi vlastníci';
   }
 });
+
+applyTheme(currentTheme(), false);
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', boot);
