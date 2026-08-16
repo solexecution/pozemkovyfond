@@ -282,6 +282,18 @@ function showToast(msg, type = 'info') {
   setTimeout(() => t.classList.remove('show'), 3000);
 }
 
+function katasterVypisUrl(lv, kuCode) {
+  return `https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${encodeURIComponent(lv)}&cadastralUnitCode=${encodeURIComponent(kuCode)}&outputType=html`;
+}
+
+function openNewTab(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.click();
+}
+
 function openKatasterLV(kuName, kuCislo, lv) {
   if (!lv) return;
   const kuText = kuName ? kuName.trim() : '';
@@ -300,10 +312,10 @@ function openKatasterLV(kuName, kuCislo, lv) {
   });
   if (cleanCislo) {
     showToast(`📜 Otváram priamy Výpis z LV č. ${lv} (${kuText})...`, 'success');
-    window.open(`https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${lv}&cadastralUnitCode=${cleanCislo}&outputType=html`, '_blank');
+    openNewTab(katasterVypisUrl(lv, cleanCislo));
   } else {
     showToast(`Otváram Kataster Portal pre ${info}...`, 'info');
-    window.open('https://kataster.skgeodesy.sk/eskn-portal/search/lv', '_blank');
+    openNewTab('https://kataster.skgeodesy.sk/eskn-portal/search/lv');
   }
 }
 window.openKatasterLV = openKatasterLV;
@@ -1705,8 +1717,8 @@ function renderDossier(data) {
                 <td><strong>${r.portion ?? '—'}</strong></td>
                 <td class="cell-muted">${esc(r.variants || '—')}</td>
                 <td class="cell-muted">${esc(xferTxt)}</td>
-                <td><a class="btn-lv-link" target="_blank" rel="noopener"
-                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">Výpis</a></td>
+                <td><a class="btn-lv-link" target="pzf-vypis-${r.cislo_ku}-${r.lv}" rel="noopener noreferrer"
+                      href="${katasterVypisUrl(r.lv, r.cislo_ku)}">Výpis</a></td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -1929,8 +1941,8 @@ async function loadSoloLvs(page = 1) {
                 <td>${m2 > 0 ? `<strong title="${esc(tip)}">${fmt(Math.round(m2))} m²</strong>` : '<span style="opacity:.45">—</span>'}</td>
                 <td>${pc ? `<span class="badge badge-blue" title="${esc(tip)}">${fmt(pc)}</span>` : '—'}</td>
                 <td><strong>1.0</strong></td>
-                <td><a class="btn-lv-link" target="_blank" rel="noopener"
-                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
+                <td><a class="btn-lv-link" target="pzf-vypis-${r.cislo_ku}-${r.lv}" rel="noopener noreferrer"
+                      href="${katasterVypisUrl(r.lv, r.cislo_ku)}">📜 Výpis ↗</a></td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -2092,7 +2104,7 @@ function openAllLvs(lvs) {
   showToast(`🚀 Otváram ${lvs.length} unikátnych výpisov z Katastra...`, 'success');
   lvs.forEach((item, i) => {
     setTimeout(() => {
-      window.open(`https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${item.lv}&cadastralUnitCode=${item.ku}&outputType=html`, '_blank');
+      window.open(katasterVypisUrl(item.lv, item.ku), `pzf-vypis-${item.ku}-${item.lv}`);
     }, i * 150);
   });
 }
@@ -2271,8 +2283,8 @@ async function loadLvAnalysis(searchName) {
                 <td><strong style="color:#6ee7b7">${fmt(r.owned_m2)} m²</strong></td>
                 <td style="font-size:0.75rem;color:var(--text-secondary)">${esc(r.titul_nadobudnutia || '-')}</td>
                 <td>
-                  <a href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html"
-                     target="_blank" class="btn-lv-link">📜 Výpis LV ${r.lv} ↗</a>
+                  <a href="${katasterVypisUrl(r.lv, r.cislo_ku)}"
+                     target="pzf-vypis-${r.cislo_ku}-${r.lv}" rel="noopener noreferrer" class="btn-lv-link">📜 Výpis LV ${r.lv} ↗</a>
                 </td>
               </tr>
             `).join('')}
@@ -2468,8 +2480,9 @@ function renderOwnerTable(rows, focusInfo) {
             </td>
             <td>${esc(r.meno_vlastnika)}</td>
             <td>
-              <a href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.poradove_cislo}&outputType=html"
-                 target="_blank"
+              <a href="${katasterVypisUrl(r.lv, r.poradove_cislo)}"
+                 target="pzf-vypis-${r.poradove_cislo}-${r.lv}"
+                 rel="noopener noreferrer"
                  class="btn-lv-link"
                  title="Otvoriť priamy výpis z Katastra pre LV ${fmt(r.lv)} (${esc(r.katastralne_uzemie)})">
                 📜 Výpis LV ${fmt(r.lv)} ↗
@@ -2745,8 +2758,9 @@ function renderTrTable(rows, focusInfo) {
             <td style="font-size:0.72rem;color:var(--text-secondary)">${esc(r.crz)}</td>
             <td>${fmtDate(r.datum_ucinnosti)}</td>
             <td>
-              <a href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html"
-                 target="_blank"
+              <a href="${katasterVypisUrl(r.lv, r.cislo_ku)}"
+                 target="pzf-vypis-${r.cislo_ku}-${r.lv}"
+                 rel="noopener noreferrer"
                  class="btn-lv-link"
                  title="Otvoriť priamy výpis z Katastra pre LV ${fmt(r.lv)} (${esc(r.nazov_ku)})">
                 📜 Výpis LV ${fmt(r.lv)} ↗
