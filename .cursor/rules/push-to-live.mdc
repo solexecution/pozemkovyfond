@@ -1,0 +1,12 @@
+---
+description: Always commit finished app work and push to GitHub Pages
+alwaysApply: true
+---
+
+# Always push to live
+
+After finishing user-requested changes to the public app, commit and `git push origin HEAD` to `main` so GitHub Pages updates. Do not wait to be asked.
+
+Leave out local-only files: `data/lv_*.parquet`, `fetch-solo-lvs.mjs`, secrets.
+
+Live site: https://solexecution.github.io/pozemkovyfond/

@@ -155,16 +155,6 @@ body.register-view .header-search {
   padding-left: 1rem;
   font-size: 16px;
 }
-.header-place-wrap {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  max-width: 220px;
-}
-.header-place-wrap > .search-input {
-  width: 100%;
-  font-size: 16px;
-}
 .header-search-go {
   background: var(--blue);
   border: 0;
@@ -672,7 +662,6 @@ html[data-theme="light"] .theme-icon-sun { display: none; }
   .logo-text { display: none; }
   .db-status span { display: none; }
   .header-search-go { display: none; }
-  .header-place-wrap { max-width: 46%; }
   .hero-search-go { width: 100%; }
   .main { padding: 1rem; }
   .hero-title { font-size: 1.4rem; }
@@ -1356,6 +1345,27 @@ body.landing-mode #overview-dashboard { display: none !important; }
   font-size: 1.15rem;
   font-weight: 650;
   margin: 0 0 0.35rem;
+}
+.place-filter {
+  margin: 0.85rem 0 1rem;
+  max-width: 360px;
+}
+.place-filter-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 0.35rem;
+}
+.place-filter-wrap {
+  position: relative;
+}
+.place-filter-wrap > .search-input {
+  width: 100%;
+  padding-left: 1rem;
+  font-size: 16px;
 }
 .wizard-step { margin-bottom: 1.5rem; }
 

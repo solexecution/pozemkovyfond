@@ -401,7 +401,7 @@ window.toggleRegMenu = toggleRegMenu;
 window.goHome = goHome;
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#reg-wrap')) closeRegMenu();
-  if (!e.target.closest('#overview-place, #header-place, #overview-search, #header-search, .whisper')) hideWhisper();
+  if (!e.target.closest('#overview-place, #results-place, #overview-search, #header-search, .whisper')) hideWhisper();
 });
 
 // ── DB Status ──────────────────────────────────────────────────────────────
@@ -643,13 +643,13 @@ function syncSearchInputs(val, source) {
 }
 function syncPlaceInputs(val, source) {
   const ov = document.getElementById('overview-place');
-  const hd = document.getElementById('header-place');
+  const rs = document.getElementById('results-place');
   if (ov && source !== 'overview' && ov.value !== val) ov.value = val;
-  if (hd && source !== 'header' && hd.value !== val) hd.value = val;
+  if (rs && source !== 'results' && rs.value !== val) rs.value = val;
 }
 function currentPlaceQuery() {
   return (document.getElementById('overview-place')?.value
-    || document.getElementById('header-place')?.value
+    || document.getElementById('results-place')?.value
     || ovSearch.placeQ
     || ovSearch.fKu
     || '').trim();
@@ -831,7 +831,7 @@ function submitOverviewSearch(e) {
   document.getElementById('overview-search')?.blur();
   document.getElementById('header-search')?.blur();
   document.getElementById('overview-place')?.blur();
-  document.getElementById('header-place')?.blur();
+  document.getElementById('results-place')?.blur();
   showTab('overview');
   setOverviewSearching(true, 'Hľadám v registri…');
   loadOverviewSearch(1);
@@ -895,17 +895,17 @@ let _nameWhisperTimer = null;
 
 function whisperDd(kind, source) {
   if (kind === 'place') {
-    return document.getElementById(source === 'header' ? 'header-place-dd' : 'overview-place-dd');
+    return document.getElementById(source === 'overview' ? 'overview-place-dd' : 'results-place-dd');
   }
   return document.getElementById(source === 'header' ? 'header-name-dd' : 'overview-name-dd');
 }
 
 function hideWhisper(kind) {
   const ids = kind === 'place'
-    ? ['overview-place-dd', 'header-place-dd']
+    ? ['overview-place-dd', 'results-place-dd']
     : kind === 'name'
       ? ['overview-name-dd', 'header-name-dd']
-      : ['overview-place-dd', 'header-place-dd', 'overview-name-dd', 'header-name-dd'];
+      : ['overview-place-dd', 'results-place-dd', 'overview-name-dd', 'header-name-dd'];
   ids.forEach((id) => {
     const el = document.getElementById(id);
     if (el) { el.hidden = true; el.innerHTML = ''; }
@@ -1028,9 +1028,9 @@ function renderWhisper(kind, rows, source, query, pickFn, labelOf) {
 }
 
 function renderPlaceSuggest(rows, source) {
-  const typed = (source === 'header'
-    ? document.getElementById('header-place')?.value
-    : document.getElementById('overview-place')?.value) || ovSearch.placeQ || '';
+  const typed = (source === 'overview'
+    ? document.getElementById('overview-place')?.value
+    : document.getElementById('results-place')?.value) || ovSearch.placeQ || '';
   renderWhisper('place', rows, source, typed, 'pickPlaceSuggest', (r) => r.katastralne_uzemie);
 }
 

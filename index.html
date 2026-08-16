@@ -101,16 +101,6 @@
                aria-label="Hľadať meno">
         <div id="header-name-dd" class="whisper" hidden></div>
       </div>
-      <div class="header-place-wrap">
-        <input type="search" class="search-input" id="header-place"
-               placeholder="Obec / k.ú.…"
-               enterkeyhint="search" inputmode="search"
-               autocomplete="off" autocorrect="off" spellcheck="false"
-               oninput="onPlaceSearchInput(this.value, 'header')"
-               onkeydown="onPlaceSearchKeydown(event, 'header')"
-               aria-label="Filtrovať obec alebo katastrálne územie">
-        <div id="header-place-dd" class="whisper" hidden></div>
-      </div>
       <button type="submit" class="header-search-go" aria-label="Hľadať">Hľadať</button>
     </form>
 
@@ -221,7 +211,7 @@
 
       <section class="wizard-step" id="step-places-strip" hidden>
         <h2 class="step-title">Obce v hľadaní</h2>
-        <p class="insight-note">Zúžte výsledky na katastrálne územie — alebo ho zadajte hore v poli Obec.</p>
+        <p class="insight-note">Zúžte výsledky na katastrálne územie — alebo ho zadajte v poli Obec.</p>
         <div class="chip-row" id="overview-places-wrap"></div>
       </section>
 
@@ -234,6 +224,19 @@
       <section class="wizard-step" id="step-places" hidden>
         <h2 class="step-title" id="step-places-title">Ktoré katastrálne územie?</h2>
         <p class="insight-note">Jedno meno môže byť na viacerých obciach. Zvoľte miesto, ktoré hľadáte.</p>
+        <div class="place-filter">
+          <label class="place-filter-label" for="results-place">Obec / k.ú.</label>
+          <div class="place-filter-wrap">
+            <input type="search" class="search-input" id="results-place"
+                   placeholder="Napr. Sulín"
+                   enterkeyhint="search" inputmode="search"
+                   autocomplete="off" autocorrect="off" spellcheck="false"
+                   oninput="onPlaceSearchInput(this.value, 'results')"
+                   onkeydown="onPlaceSearchKeydown(event, 'results')"
+                   aria-label="Filtrovať obec alebo katastrálne územie">
+            <div id="results-place-dd" class="whisper" hidden></div>
+          </div>
+        </div>
         <div class="pick-grid" id="overview-ku-wrap"></div>
       </section>
 
