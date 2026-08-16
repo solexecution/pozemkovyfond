@@ -295,6 +295,166 @@ function openNewTab(url) {
   a.click();
 }
 
+const ZBGIS_ZOOM_KU = 18;
+let _kuCentroidIndex = null;
+let _kuCentroidPromise = null;
+
+function zbgisMapkaUrl(lat, lng, zoom = ZBGIS_ZOOM_KU) {
+  return `https://zbgis.skgeodesy.sk/mapka/sk/kataster/identification/point?pos=${lat},${lng},${zoom}`;
+}
+
+function zbgisWindowName(ku, lv) {
+  return `pzf-zbgis-${ku || 'ku'}-${lv || 'lv'}`;
+}
+
+function featureCentroid(feature) {
+  const g = feature?.geometry;
+  if (!g) return null;
+  if (g.type === 'Point' && Array.isArray(g.coordinates) && g.coordinates.length >= 2) {
+    const lng = Number(g.coordinates[0]);
+    const lat = Number(g.coordinates[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+    return null;
+  }
+  try {
+    if (typeof L !== 'undefined') {
+      const c = L.geoJSON(feature).getBounds().getCenter();
+      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) return { lat: c.lat, lng: c.lng };
+    }
+  } catch (_) {}
+  return null;
+}
+
+function addCentroidEntry(idx, name, district, lat, lng) {
+  if (!name || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  const key = fold(name);
+  const rec = { name, district: district || '', lat, lng };
+  const list = idx.get(key);
+  if (list) list.push(rec);
+  else idx.set(key, [rec]);
+}
+
+async function loadKuCentroidIndex() {
+  if (_kuCentroidIndex) return _kuCentroidIndex;
+  if (_kuCentroidPromise) return _kuCentroidPromise;
+  _kuCentroidPromise = (async () => {
+    const idx = new Map();
+    let geo = window._geoBoundariesData;
+    if (!geo?.features) {
+      try {
+        const res = await fetch(new URL('sk_boundaries.json', document.baseURI).href);
+        if (res.ok) geo = await res.json();
+      } catch (_) {}
+    }
+    (geo?.features || []).forEach((f) => {
+      const c = featureCentroid(f);
+      if (c) addCentroidEntry(idx, f.properties?.name, f.properties?.district, c.lat, c.lng);
+    });
+    if (typeof SLOVAK_COORDINATES !== 'undefined') {
+      Object.entries(SLOVAK_COORDINATES).forEach(([name, coords]) => {
+        if (idx.has(fold(name)) || !coords) return;
+        addCentroidEntry(idx, name, '', Number(coords[0]), Number(coords[1]));
+      });
+    }
+    _kuCentroidIndex = idx;
+    return idx;
+  })();
+  try {
+    return await _kuCentroidPromise;
+  } catch (e) {
+    _kuCentroidPromise = null;
+    throw e;
+  }
+}
+
+function pickKuCentroid(entries, districtHint) {
+  if (!entries?.length) return null;
+  if (entries.length === 1) return entries[0];
+  const dist = fold(districtHint || '');
+  if (dist) {
+    const hit = entries.find((e) => {
+      const d = fold(e.district);
+      return d && (d.includes(dist) || dist.includes(d));
+    });
+    if (hit) return hit;
+  }
+  return entries[0];
+}
+
+function matchKuCentroid(idx, kuName, districtHint) {
+  const key = fold(kuName);
+  if (!key || !idx) return null;
+  const exact = pickKuCentroid(idx.get(key), districtHint);
+  if (exact) return exact;
+  let best = null;
+  let bestScore = Infinity;
+  for (const [k, entries] of idx) {
+    if (!(k.includes(key) || key.includes(k))) continue;
+    const score = Math.abs(k.length - key.length);
+    if (score >= bestScore) continue;
+    const hit = pickKuCentroid(entries, districtHint);
+    if (!hit) continue;
+    best = hit;
+    bestScore = score;
+  }
+  return bestScore <= 8 ? best : null;
+}
+
+async function resolveZbgisLocation({ kuName = '', district = '' } = {}) {
+  const idx = await loadKuCentroidIndex();
+  const hit = matchKuCentroid(idx, kuName, district);
+  if (!hit) return null;
+  return {
+    lat: hit.lat,
+    lng: hit.lng,
+    source: 'ku-centroid',
+    label: hit.name,
+    url: zbgisMapkaUrl(hit.lat, hit.lng, ZBGIS_ZOOM_KU),
+  };
+}
+
+function openNamedWindow(url, name) {
+  const w = window.open(url, name);
+  if (w) return w;
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = name;
+  a.rel = 'noopener noreferrer';
+  a.click();
+  return null;
+}
+
+async function openZbgisMap({ lv, ku, kuName = '', district = '' } = {}) {
+  const name = zbgisWindowName(ku, lv);
+  const pending = window.open('about:blank', name);
+  const loc = await resolveZbgisLocation({ kuName, district });
+  if (!loc) {
+    if (pending) pending.close();
+    showToast('Neviem nájsť polohu k.ú. na ZBGIS mape.', 'error');
+    return;
+  }
+  track('zbgis', { ku: kuName, ku_code: String(ku || ''), lv, source: loc.source });
+  if (pending) pending.location.href = loc.url;
+  else openNamedWindow(loc.url, name);
+  if (loc.source === 'ku-centroid') {
+    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (presné súradnice parcely nie sú v databáze)`, 'info');
+  }
+}
+window.openZbgisMap = openZbgisMap;
+
+function lvLinksHtml(lv, ku, kuName, vypisLabel = 'Výpis') {
+  const target = `pzf-vypis-${ku}-${lv}`;
+  const place = kuName || ku || '';
+  return `<span class="lv-row-actions">
+    <a class="btn-lv-link" target="${target}" rel="noopener noreferrer"
+       href="${katasterVypisUrl(lv, ku)}"
+       title="Výpis z LV ${fmt(lv)} (${esc(place)})">${vypisLabel}</a>
+    <button type="button" class="btn-zbgis-link"
+      data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
+      title="ZBGIS mapa — kataster pri k.ú. ${esc(place)}">ZBGIS mapa</button>
+  </span>`;
+}
+
 function sanitizeLvHtml(html) {
   const cleaned = String(html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
   if (!/<base\b/i.test(cleaned)) {
@@ -359,6 +519,7 @@ function ensureVypisModal() {
           <p class="vypis-sub" id="vypis-sub"></p>
         </div>
         <div class="vypis-head-actions">
+          <button type="button" class="btn btn-ghost" id="vypis-zbgis">ZBGIS mapa ↗</button>
           <a class="btn btn-ghost" id="vypis-ext" href="#" target="_blank" rel="noopener noreferrer">Otvoriť na Katastri ↗</a>
           <button type="button" class="vypis-close" id="vypis-close" aria-label="Zavrieť">×</button>
         </div>
@@ -377,6 +538,14 @@ function ensureVypisModal() {
     if (e.target === el) closeVypisModal();
   });
   el.querySelector('#vypis-close').addEventListener('click', closeVypisModal);
+  el.querySelector('#vypis-zbgis').addEventListener('click', () => {
+    const btn = el.querySelector('#vypis-zbgis');
+    openZbgisMap({
+      lv: btn?.dataset.lv,
+      ku: btn?.dataset.ku,
+      kuName: btn?.dataset.kuname || '',
+    });
+  });
   return el;
 }
 
@@ -410,8 +579,14 @@ async function openVypisModal({ lv, ku, kuName = '' } = {}) {
   document.getElementById('vypis-sub').textContent = kuName ? `${kuName} · k.ú. ${ku}` : `k.ú. ${ku}`;
   const ext = document.getElementById('vypis-ext');
   const fallbackLink = document.getElementById('vypis-fallback-link');
+  const zbgisBtn = document.getElementById('vypis-zbgis');
   ext.href = url;
   fallbackLink.href = url;
+  if (zbgisBtn) {
+    zbgisBtn.dataset.lv = String(lv);
+    zbgisBtn.dataset.ku = String(ku);
+    zbgisBtn.dataset.kuname = kuName || '';
+  }
   const loading = document.getElementById('vypis-loading');
   const frame = document.getElementById('vypis-frame');
   const fallback = document.getElementById('vypis-fallback');
@@ -463,6 +638,16 @@ document.addEventListener('keydown', (e) => {
   }
 });
 document.addEventListener('click', (e) => {
+  const z = e.target.closest?.('button.btn-zbgis-link');
+  if (z) {
+    e.preventDefault();
+    openZbgisMap({
+      lv: z.dataset.lv,
+      ku: z.dataset.ku,
+      kuName: z.dataset.kuname || '',
+    });
+    return;
+  }
   const a = e.target.closest?.('a.btn-lv-link');
   if (!a || !a.href) return;
   let url;
@@ -1924,8 +2109,7 @@ function renderDossier(data) {
                 <td><strong>${r.portion ?? '—'}</strong></td>
                 <td class="cell-muted">${esc(r.variants || '—')}</td>
                 <td class="cell-muted">${esc(xferTxt)}</td>
-                <td><a class="btn-lv-link" target="pzf-vypis-${r.cislo_ku}-${r.lv}" rel="noopener noreferrer"
-                      href="${katasterVypisUrl(r.lv, r.cislo_ku)}">Výpis</a></td>
+                <td>${lvLinksHtml(r.lv, r.cislo_ku, r.ku_name, 'Výpis')}</td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -2150,8 +2334,7 @@ async function loadSoloLvs(page = 1) {
                 <td>${m2 > 0 ? `<strong title="${esc(tip)}">${fmt(Math.round(m2))} m²</strong>` : '<span style="opacity:.45">—</span>'}</td>
                 <td>${pc ? `<span class="badge badge-blue" title="${esc(tip)}">${fmt(pc)}</span>` : '—'}</td>
                 <td><strong>1.0</strong></td>
-                <td><a class="btn-lv-link" target="pzf-vypis-${r.cislo_ku}-${r.lv}" rel="noopener noreferrer"
-                      href="${katasterVypisUrl(r.lv, r.cislo_ku)}">📜 Výpis ↗</a></td>
+                <td>${lvLinksHtml(r.lv, r.cislo_ku, r.katastralne_uzemie, '📜 Výpis ↗')}</td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -2492,8 +2675,7 @@ async function loadLvAnalysis(searchName) {
                 <td><strong style="color:#6ee7b7">${fmt(r.owned_m2)} m²</strong></td>
                 <td style="font-size:0.75rem;color:var(--text-secondary)">${esc(r.titul_nadobudnutia || '-')}</td>
                 <td>
-                  <a href="${katasterVypisUrl(r.lv, r.cislo_ku)}"
-                     target="pzf-vypis-${r.cislo_ku}-${r.lv}" rel="noopener noreferrer" class="btn-lv-link">📜 Výpis LV ${r.lv} ↗</a>
+                  ${lvLinksHtml(r.lv, r.cislo_ku, r.nazov_ku, `📜 Výpis LV ${r.lv} ↗`)}
                 </td>
               </tr>
             `).join('')}
@@ -2689,13 +2871,7 @@ function renderOwnerTable(rows, focusInfo) {
             </td>
             <td>${esc(r.meno_vlastnika)}</td>
             <td>
-              <a href="${katasterVypisUrl(r.lv, r.poradove_cislo)}"
-                 target="pzf-vypis-${r.poradove_cislo}-${r.lv}"
-                 rel="noopener noreferrer"
-                 class="btn-lv-link"
-                 title="Otvoriť priamy výpis z Katastra pre LV ${fmt(r.lv)} (${esc(r.katastralne_uzemie)})">
-                📜 Výpis LV ${fmt(r.lv)} ↗
-              </a>
+              ${lvLinksHtml(r.lv, r.poradove_cislo, r.katastralne_uzemie, `📜 Výpis LV ${fmt(r.lv)} ↗`)}
             </td>
           </tr>`).join('')}
       </tbody>
@@ -2967,13 +3143,7 @@ function renderTrTable(rows, focusInfo) {
             <td style="font-size:0.72rem;color:var(--text-secondary)">${esc(r.crz)}</td>
             <td>${fmtDate(r.datum_ucinnosti)}</td>
             <td>
-              <a href="${katasterVypisUrl(r.lv, r.cislo_ku)}"
-                 target="pzf-vypis-${r.cislo_ku}-${r.lv}"
-                 rel="noopener noreferrer"
-                 class="btn-lv-link"
-                 title="Otvoriť priamy výpis z Katastra pre LV ${fmt(r.lv)} (${esc(r.nazov_ku)})">
-                📜 Výpis LV ${fmt(r.lv)} ↗
-              </a>
+              ${lvLinksHtml(r.lv, r.cislo_ku, r.nazov_ku, `📜 Výpis LV ${fmt(r.lv)} ↗`)}
             </td>
           </tr>`).join('')}
       </tbody>
@@ -4145,6 +4315,7 @@ async function boot() {
   try {
     await initDb();
     showSourceBannerIfNeeded();
+    loadKuCentroidIndex().catch(() => {});
     const sharedQ = searchQueryFromUrl();
     const params = new URLSearchParams(location.search);
     ovSearch.pickName = (params.get('name') || '').trim();

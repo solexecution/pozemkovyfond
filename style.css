@@ -780,6 +780,37 @@ html[data-theme="light"] .theme-icon-sun { display: none; }
   box-shadow: 0 0 10px rgba(245, 158, 11, 0.4);
 }
 
+.lv-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.btn-zbgis-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn-zbgis-link:hover {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: #10b981;
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.35);
+}
+
 .bulk-lv-bar {
   display: flex;
   align-items: center;
@@ -1216,6 +1247,10 @@ html[data-theme="light"] #tab-map.map-filtered .map-num-pill {
 }
 html[data-theme="light"] .btn-lv-link {
   color: #92400e;
+}
+html[data-theme="light"] .btn-zbgis-link {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
 }
 
 .map-search-dropdown {
