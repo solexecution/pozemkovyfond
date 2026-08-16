@@ -294,15 +294,107 @@ function openNewTab(url) {
   a.click();
 }
 
+function sanitizeLvHtml(html) {
+  const cleaned = String(html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
+  if (!/<base\b/i.test(cleaned)) {
+    return cleaned.replace(/<head([^>]*)>/i, '<head$1><base href="https://kataster.skgeodesy.sk/">');
+  }
+  return cleaned;
+}
+
+function ensureVypisModal() {
+  let el = document.getElementById('vypis-modal');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'vypis-modal';
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="vypis-dialog" role="dialog" aria-modal="true" aria-labelledby="vypis-title">
+      <div class="vypis-head">
+        <div>
+          <h2 id="vypis-title">Výpis z LV</h2>
+          <p class="vypis-sub" id="vypis-sub"></p>
+        </div>
+        <div class="vypis-head-actions">
+          <a class="btn btn-ghost" id="vypis-ext" href="#" target="_blank" rel="noopener noreferrer">Otvoriť na Katastri ↗</a>
+          <button type="button" class="vypis-close" id="vypis-close" aria-label="Zavrieť">×</button>
+        </div>
+      </div>
+      <div class="vypis-body">
+        <div class="vypis-loading" id="vypis-loading">Načítavam výpis…</div>
+        <iframe class="vypis-frame" id="vypis-frame" title="Výpis z listu vlastníctva" hidden></iframe>
+        <div class="vypis-fallback" id="vypis-fallback" hidden>
+          <p>Kataster nepovoľuje vložiť výpis priamo do stránky. Otvorí sa v tomto okne, keď to pôjde — zatiaľ ho môžete otvoriť na portáli.</p>
+          <a class="btn" id="vypis-fallback-link" href="#" target="_blank" rel="noopener noreferrer">Otvoriť výpis na Katastri</a>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', (e) => {
+    if (e.target === el) closeVypisModal();
+  });
+  el.querySelector('#vypis-close').addEventListener('click', closeVypisModal);
+  return el;
+}
+
+function closeVypisModal() {
+  const el = document.getElementById('vypis-modal');
+  if (!el) return;
+  el.hidden = true;
+  document.body.classList.remove('vypis-open');
+  const frame = document.getElementById('vypis-frame');
+  if (frame) {
+    frame.removeAttribute('srcdoc');
+    frame.removeAttribute('src');
+    frame.hidden = true;
+  }
+}
+
+async function openVypisModal({ lv, ku, kuName = '' } = {}) {
+  if (!lv || !ku) {
+    openNewTab('https://kataster.skgeodesy.sk/eskn-portal/search/lv');
+    return;
+  }
+  const url = katasterVypisUrl(lv, ku);
+  const modal = ensureVypisModal();
+  modal.hidden = false;
+  document.body.classList.add('vypis-open');
+  document.getElementById('vypis-title').textContent = `Výpis LV ${lv}`;
+  document.getElementById('vypis-sub').textContent = kuName ? `${kuName} · k.ú. ${ku}` : `k.ú. ${ku}`;
+  const ext = document.getElementById('vypis-ext');
+  const fallbackLink = document.getElementById('vypis-fallback-link');
+  ext.href = url;
+  fallbackLink.href = url;
+  const loading = document.getElementById('vypis-loading');
+  const frame = document.getElementById('vypis-frame');
+  const fallback = document.getElementById('vypis-fallback');
+  loading.hidden = false;
+  frame.hidden = true;
+  fallback.hidden = true;
+  frame.removeAttribute('srcdoc');
+  frame.removeAttribute('src');
+
+  let html = '';
+  try {
+    html = await apiFetch(`/lv-preview?lv=${encodeURIComponent(lv)}&ku=${encodeURIComponent(ku)}`).then((r) => r.text());
+  } catch (_) {}
+  if (html && html.includes('LIST U VLASTNÍCTVA')) {
+    frame.srcdoc = sanitizeLvHtml(html);
+    frame.hidden = false;
+    loading.hidden = true;
+    return;
+  }
+  loading.hidden = true;
+  fallback.hidden = false;
+}
+
 function openKatasterLV(kuName, kuCislo, lv) {
   if (!lv) return;
   const kuText = kuName ? kuName.trim() : '';
   const info = `${kuText}${kuCislo ? ` (k.ú. ${kuCislo})` : ''}, LV ${lv}`;
-
   try {
     navigator.clipboard.writeText(info);
   } catch (_) {}
-
   const cleanCislo = kuCislo ? String(kuCislo).trim() : '';
   track('kataster', {
     name: ovSearch?.pickName || '',
@@ -310,15 +402,29 @@ function openKatasterLV(kuName, kuCislo, lv) {
     ku_code: cleanCislo,
     lv,
   });
-  if (cleanCislo) {
-    showToast(`📜 Otváram priamy Výpis z LV č. ${lv} (${kuText})...`, 'success');
-    openNewTab(katasterVypisUrl(lv, cleanCislo));
-  } else {
-    showToast(`Otváram Kataster Portal pre ${info}...`, 'info');
-    openNewTab('https://kataster.skgeodesy.sk/eskn-portal/search/lv');
-  }
+  if (cleanCislo) openVypisModal({ lv, ku: cleanCislo, kuName: kuText });
+  else openNewTab('https://kataster.skgeodesy.sk/eskn-portal/search/lv');
 }
 window.openKatasterLV = openKatasterLV;
+window.closeVypisModal = closeVypisModal;
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('vypis-modal') && !document.getElementById('vypis-modal').hidden) {
+    closeVypisModal();
+  }
+});
+document.addEventListener('click', (e) => {
+  const a = e.target.closest?.('a.btn-lv-link');
+  if (!a || !a.href) return;
+  let url;
+  try { url = new URL(a.href, location.href); } catch (_) { return; }
+  if (!url.hostname.includes('skgeodesy.sk')) return;
+  const lv = url.searchParams.get('prfNumber');
+  const ku = url.searchParams.get('cadastralUnitCode');
+  if (!lv || !ku) return;
+  e.preventDefault();
+  openVypisModal({ lv, ku, kuName: a.title || '' });
+});
 
 // ── Universal Focus Preservation ───────────────────────────────────────────
 function captureFocus() {

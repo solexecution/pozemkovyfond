@@ -986,6 +986,94 @@ tr:hover td { background: rgba(59, 130, 246, 0.03); }
 /* ── Overlap highlights ── */
 .highlight-match { color: var(--amber); font-weight: 600; }
 
+/* ── LV výpis modal ── */
+body.vypis-open { overflow: hidden; }
+#vypis-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+}
+#vypis-modal[hidden] { display: none; }
+.vypis-dialog {
+  width: min(1100px, 100%);
+  height: min(90vh, 940px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.vypis-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.vypis-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.vypis-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.vypis-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.vypis-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--hover-bg);
+  color: var(--text-primary);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.vypis-close:hover { background: var(--border); }
+.vypis-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+.vypis-loading,
+.vypis-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  padding: 1.5rem;
+  text-align: center;
+  color: #334155;
+  background: #fff;
+}
+.vypis-fallback p { max-width: 28rem; margin: 0; }
+.vypis-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
 /* ── Toast ── */
 #toast {
   position: fixed;
