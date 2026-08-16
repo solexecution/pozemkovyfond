@@ -215,11 +215,49 @@ function restoreFocus(info) {
 
 // ── Tab Navigation ─────────────────────────────────────────────────────────
 const tabLoaded = {};
+function closeRegMenu() {
+  const dd = document.getElementById('reg-dropdown');
+  const btn = document.getElementById('reg-toggle');
+  const wrap = document.getElementById('reg-wrap');
+  if (dd) dd.hidden = true;
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  if (wrap) wrap.classList.remove('open');
+}
+function toggleRegMenu() {
+  const dd = document.getElementById('reg-dropdown');
+  if (!dd) return;
+  const open = dd.hidden;
+  if (open) {
+    dd.hidden = false;
+    document.getElementById('reg-toggle')?.setAttribute('aria-expanded', 'true');
+    document.getElementById('reg-wrap')?.classList.add('open');
+  } else {
+    closeRegMenu();
+  }
+}
+function goHome() {
+  closeRegMenu();
+  showTab('overview');
+  const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
+  if (q.length >= 2) {
+    document.body.classList.add('search-mode');
+    document.body.classList.remove('landing-mode');
+  } else {
+    document.body.classList.add('landing-mode');
+    document.body.classList.remove('search-mode');
+    document.getElementById('overview-search')?.focus();
+  }
+}
 function showTab(name) {
+  closeRegMenu();
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  document.getElementById('nav-' + name).classList.add('active');
+  const tab = document.getElementById('tab-' + name);
+  if (tab) tab.classList.add('active');
+  const nav = document.getElementById('nav-' + name);
+  if (nav) nav.classList.add('active');
+  document.body.classList.toggle('register-view', name !== 'overview');
+  if (name !== 'overview') document.body.classList.remove('landing-mode');
   if (!tabLoaded[name]) {
     tabLoaded[name] = true;
     switch (name) {
@@ -239,6 +277,11 @@ function showTab(name) {
   }
 }
 window.showTab = showTab;
+window.toggleRegMenu = toggleRegMenu;
+window.goHome = goHome;
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#reg-wrap')) closeRegMenu();
+});
 
 // ── DB Status ──────────────────────────────────────────────────────────────
 async function checkDbStatus() {
@@ -263,14 +306,21 @@ async function loadOverview() {
   const stats = await checkDbStatus();
   if (!stats) return;
 
-  document.getElementById('s-total-uo').textContent    = fmt(stats.total_unknown_owners);
-  document.getElementById('s-unique-ku').textContent   = fmt(stats.unique_katastralne);
-  document.getElementById('s-unique-lv').textContent   = fmt(stats.unique_lv_uo);
-  document.getElementById('s-unique-names').textContent = fmt(stats.unique_names);
-  document.getElementById('s-transferred').textContent  = fmt(stats.total_transferred);
-  document.getElementById('s-overlap').textContent      = fmt(stats.overlap_count);
+  const setTxt = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  };
+  setTxt('s-total-uo', fmt(stats.total_unknown_owners));
+  setTxt('s-unique-ku', fmt(stats.unique_katastralne));
+  setTxt('s-unique-lv', fmt(stats.unique_lv_uo));
+  setTxt('s-unique-names', fmt(stats.unique_names));
+  setTxt('s-transferred', fmt(stats.total_transferred));
+  setTxt('s-overlap', fmt(stats.overlap_count));
 
-  await Promise.all([loadTopKuChart(), loadTopKuTrChart(), loadByYearChart(), loadAlphaChart()]);
+  const scale = document.getElementById('landing-scale');
+  if (scale) {
+    scale.textContent = `${fmt(stats.total_unknown_owners)} záznamov · ${fmt(stats.unique_names)} mien · ${fmt(stats.unique_katastralne)} katastrálnych území`;
+  }
 }
 
 let chartTopKu = null;
@@ -378,9 +428,14 @@ const ovSearch = {
   pickName: '',
   pickKu: '',
   names: [],
+  places: [],
+  districts: [],
   variantMap: {},
   sortCol: 'portion',
   sortDir: 'DESC',
+  step: 'names',
+  holdNames: false,
+  holdPlaces: false,
 };
 
 function cleanPersonName(raw) {
@@ -455,6 +510,68 @@ function variantsFor(name) {
 function namesParam(name) {
   return encodeURIComponent(JSON.stringify(variantsFor(name)));
 }
+function jsAttr(s) {
+  return esc(s).replace(/'/g, "\\'");
+}
+function syncSearchInputs(val, source) {
+  const ov = document.getElementById('overview-search');
+  const hd = document.getElementById('header-search');
+  if (ov && source !== 'overview' && ov.value !== val) ov.value = val;
+  if (hd && source !== 'header' && hd.value !== val) hd.value = val;
+}
+function setWizardStep(step) {
+  ovSearch.step = step;
+  const names = document.getElementById('step-names');
+  const places = document.getElementById('step-places');
+  const strip = document.getElementById('step-places-strip');
+  const dossier = document.getElementById('overview-dossier');
+  if (names) names.hidden = step !== 'names';
+  if (places) places.hidden = step !== 'places';
+  if (dossier) {
+    dossier.hidden = step !== 'dossier';
+    if (step !== 'dossier') dossier.innerHTML = '';
+  }
+  if (strip) strip.hidden = step !== 'names' || !(ovSearch.places || []).length;
+  renderCrumb();
+}
+function renderCrumb() {
+  const el = document.getElementById('wizard-crumb');
+  if (!el) return;
+  const q = ovSearch.q || '';
+  const bits = [
+    `<li><button type="button" class="crumb-btn" onclick="wizardBackToNames()">${q ? `„${esc(q)}”` : 'Hľadanie'}</button></li>`,
+  ];
+  if (ovSearch.pickName) {
+    bits.push(`<li><button type="button" class="crumb-btn" onclick="wizardBackToPlaces()">${esc(ovSearch.pickName)}</button></li>`);
+  }
+  if (ovSearch.pickKu && ovSearch.step === 'dossier') {
+    bits.push(`<li><span class="crumb-current">${esc(ovSearch.pickKu)}</span></li>`);
+  }
+  el.innerHTML = bits.join('');
+}
+function wizardBackToNames() {
+  ovSearch.pickName = '';
+  ovSearch.pickKu = '';
+  ovSearch.holdNames = true;
+  ovSearch.holdPlaces = false;
+  writeSearchUrl(ovSearch.q, '', '');
+  setWizardStep('names');
+}
+function wizardBackToPlaces() {
+  if (!ovSearch.pickName) {
+    wizardBackToNames();
+    return;
+  }
+  ovSearch.pickKu = '';
+  ovSearch.holdPlaces = true;
+  writeSearchUrl(ovSearch.q, ovSearch.pickName, '');
+  if (ovSearch.districts?.length) {
+    setWizardStep('places');
+    renderPlaceCards(ovSearch.districts);
+  } else {
+    loadKuOptions(ovSearch.pickName);
+  }
+}
 let _ovTimer = null;
 let ovSearchController = null;
 
@@ -493,7 +610,7 @@ function writeSearchUrl(q, name, ku) {
   const bits = [n, k, q].filter(Boolean);
   document.title = bits.length
     ? `${bits.join(' · ')} — PZF Explorer`
-    : 'PZF Data Explorer — Neznámi vlastníci';
+    : 'PZF Explorer — Neznámi vlastníci';
 }
 
 function shareSearchLink() {
@@ -519,7 +636,6 @@ function setOverviewSearching(on, msg) {
   const status = document.getElementById('overview-search-status');
   const btn = document.getElementById('overview-search-go');
   if (form) form.classList.toggle('searching', !!on);
-  document.body.classList.toggle('search-mode', !!on || (document.getElementById('overview-search')?.value || '').trim().length >= 2);
   if (btn) btn.disabled = !!on;
   if (status) {
     if (on) {
@@ -535,34 +651,69 @@ function setOverviewSearching(on, msg) {
   }
 }
 
-function submitOverviewSearch(e) {
-  if (e) e.preventDefault();
-  const input = document.getElementById('overview-search');
-  const q = (input?.value || '').trim();
+function beginSearch(q, source) {
   ovSearch.q = q;
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.fKu = '';
+  ovSearch.pickName = '';
+  ovSearch.pickKu = '';
+  ovSearch.holdNames = false;
+  ovSearch.holdPlaces = false;
+  ovSearch.districts = [];
+  syncSearchInputs(q, source);
+}
+
+function submitOverviewSearch(e) {
+  if (e) e.preventDefault();
+  const q = (
+    document.getElementById('header-search')?.value
+    || document.getElementById('overview-search')?.value
+    || ovSearch.q
+    || ''
+  ).trim();
+  beginSearch(q);
   clearTimeout(_ovTimer);
   if (q.length < 2) {
     setOverviewSearching(false, 'Zadajte aspoň 2 znaky.');
     return;
   }
-  if (input) input.blur();
+  document.getElementById('overview-search')?.blur();
+  document.getElementById('header-search')?.blur();
+  showTab('overview');
   setOverviewSearching(true, 'Hľadám v registri…');
   loadOverviewSearch(1);
 }
 
 function onOverviewSearchInput(val) {
-  ovSearch.q = val;
-  ovSearch.page = 1;
-  ovSearch.fName = '';
-  ovSearch.fKu = '';
+  beginSearch(val, 'overview');
   clearTimeout(_ovTimer);
   if (val.trim().length < 2) {
     setOverviewSearching(false);
+    const card = document.getElementById('overview-search-card');
+    if (card) card.hidden = true;
+    document.body.classList.add('landing-mode');
+    document.body.classList.remove('search-mode');
     return;
   }
+  setOverviewSearching(true, 'Hľadám…');
+  _ovTimer = setTimeout(() => loadOverviewSearch(1), 400);
+}
+
+function onHeaderSearchInput(val) {
+  beginSearch(val, 'header');
+  clearTimeout(_ovTimer);
+  if (val.trim().length < 2) {
+    setOverviewSearching(false);
+    const card = document.getElementById('overview-search-card');
+    if (card) card.hidden = true;
+    if (!document.body.classList.contains('register-view')) {
+      document.body.classList.add('landing-mode');
+      document.body.classList.remove('search-mode');
+    }
+    return;
+  }
+  showTab('overview');
   setOverviewSearching(true, 'Hľadám…');
   _ovTimer = setTimeout(() => loadOverviewSearch(1), 400);
 }
@@ -576,20 +727,27 @@ function onOverviewSearchKeydown(e) {
 }
 
 function clearOverviewSearch() {
-  const input = document.getElementById('overview-search');
-  if (input) input.value = '';
   ovSearch.q = '';
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.fKu = '';
   ovSearch.pickName = '';
   ovSearch.pickKu = '';
+  ovSearch.names = [];
+  ovSearch.places = [];
+  ovSearch.districts = [];
+  ovSearch.holdNames = false;
+  ovSearch.holdPlaces = false;
+  syncSearchInputs('');
   writeSearchUrl('');
   setOverviewSearching(false);
   document.body.classList.remove('search-mode');
+  document.body.classList.add('landing-mode');
   const card = document.getElementById('overview-search-card');
   if (card) card.hidden = true;
   hideDossier();
+  showTab('overview');
+  document.getElementById('overview-search')?.focus();
 }
 
 function filterOverviewName(name) {
@@ -727,51 +885,100 @@ function sortOverviewNames(col) {
 function renderOverviewNames() {
   const namesWrap = document.getElementById('overview-names-wrap');
   if (!namesWrap) return;
-  if (!ovSearch.names?.length) {
-    namesWrap.innerHTML = '<div class="empty-state">Žiadne mená</div>';
+  const names = sortedOverviewNames();
+  if (!names.length) {
+    namesWrap.innerHTML = '<div class="empty-state">Žiadne mená pre tento výraz. Skúste priezvisko, alebo zvoľte obec vyššie.</div>';
     return;
   }
-  const th = (label, col) => {
-    const active = ovSearch.sortCol === col;
-    const icon = active ? (ovSearch.sortDir === 'ASC' ? '↑' : '↓') : '↕';
-    return `<th class="sortable${active ? ' sort-active' : ''}" onclick="event.stopPropagation(); sortOverviewNames('${col}')">${label}<span class="sort-ic">${icon}</span></th>`;
-  };
-  namesWrap.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          ${th('Meno', 'meno_vlastnika')}
-          ${th('Záznamy', 'recs')}
-          ${th('LV', 'lvs')}
-          ${th('Hlavné k.ú.', 'top_ku')}
-          ${th('V k.ú.', 'top_ku_pct')}
-          ${th('Odhad podielu', 'portion')}
-          ${th('Solo LV', 'solo_lvs')}
-          ${th('Šanca (väčší kus)', 'chance')}
-        </tr>
-      </thead>
-      <tbody>
-        ${sortedOverviewNames().map((r) => {
-          const safe = esc(r.meno_vlastnika).replace(/'/g, "\\'");
-          const ch = nameChance(r);
-          const pct = Number(r.top_ku_pct || 0);
-          return `
-          <tr class="ov-click-row" onclick="onPickName('${safe}')" title="Vybrať toto meno a zvoliť k.ú.">
-            <td><strong>${esc(r.meno_vlastnika)}</strong></td>
-            <td>${fmt(r.recs)}</td>
-            <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
-            <td>${esc(r.top_ku || '—')}</td>
-            <td>${fmt(r.top_ku_lvs)} LV · ${pct}%</td>
-            <td title="Súčet 1/N neznámych na LV"><strong>${r.portion ?? '—'}</strong></td>
-            <td><span class="badge badge-green">${fmt(r.solo_lvs)}</span></td>
-            <td>
-              <span class="badge ${ch.cls}">${ch.label}</span>
-              <div class="chance-bar" title="Koncentrácia v hlavnom k.ú. ${pct}%"><span style="width:${Math.min(100, pct)}%"></span></div>
-            </td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>`;
+  const title = document.getElementById('step-names-title');
+  if (title) title.textContent = names.length === 1 ? 'Je to toto meno?' : `Ktoré meno? (${names.length})`;
+  namesWrap.innerHTML = names.map((r) => {
+    const ch = nameChance(r);
+    const variants = (r.variants || []).filter((v) => nameKey(v) !== nameKey(r.meno_vlastnika) || v !== r.meno_vlastnika);
+    const shown = variants.slice(0, 4);
+    const more = variants.length - shown.length;
+    const pct = Number(r.top_ku_pct || 0);
+    return `
+      <button type="button" class="pick-card" onclick="onPickName('${jsAttr(r.meno_vlastnika)}')">
+        <div class="pick-card-head">
+          <strong>${esc(r.meno_vlastnika)}</strong>
+          <span class="badge ${ch.cls}">${ch.label}</span>
+        </div>
+        ${shown.length
+          ? `<div class="variant-chips">${shown.map((v) => `<span class="variant-chip">${esc(v)}</span>`).join('')}${more > 0 ? `<span class="variant-chip muted">+${more}</span>` : ''}</div>`
+          : `<p class="variant-none">Jeden zápis v registri</p>`}
+        <div class="pick-card-meta">
+          <span>${esc(r.top_ku || '—')}${pct ? ` · ${pct}%` : ''}</span>
+          <span>${fmt(r.lvs)} LV</span>
+          <span>${fmt(r.solo_lvs)} solo</span>
+          <span>podiel ${r.portion ?? '—'}</span>
+        </div>
+      </button>`;
+  }).join('');
+}
+
+function renderPlacesStrip(places) {
+  ovSearch.places = places || [];
+  const wrap = document.getElementById('overview-places-wrap');
+  const strip = document.getElementById('step-places-strip');
+  if (!wrap) return;
+  if (!ovSearch.places.length) {
+    if (strip) strip.hidden = true;
+    wrap.innerHTML = '';
+    return;
+  }
+  if (strip) strip.hidden = ovSearch.step !== 'names';
+  wrap.innerHTML = ovSearch.places.slice(0, 16).map((r) => `
+    <button type="button" class="place-chip${ovSearch.fKu === r.katastralne_uzemie ? ' active' : ''}"
+            onclick="onPickPlaceChip('${jsAttr(r.katastralne_uzemie)}')">
+      ${esc(r.katastralne_uzemie)}
+      <span>${fmt(r.names)} mien · ${fmt(r.lvs)} LV</span>
+    </button>`).join('');
+}
+
+function onPickPlaceChip(ku) {
+  ovSearch.fKu = ovSearch.fKu === ku ? '' : ku;
+  ovSearch.pickName = '';
+  ovSearch.pickKu = '';
+  ovSearch.holdNames = false;
+  loadOverviewSearch(1);
+}
+
+function renderPlaceCards(rows) {
+  const wrap = document.getElementById('overview-ku-wrap');
+  if (!wrap) return;
+  const title = document.getElementById('step-places-title');
+  if (title) {
+    title.textContent = rows.length === 1
+      ? `Katastrálne územie pre ${ovSearch.pickName}`
+      : `Ktoré katastrálne územie? (${rows.length})`;
+  }
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty-state">Pre toto meno sa nenašlo katastrálne územie.</div>';
+    return;
+  }
+  wrap.innerHTML = rows.map((r) => `
+    <button type="button" class="pick-card" onclick="onPickKu('${jsAttr(r.katastralne_uzemie)}')">
+      <div class="pick-card-head">
+        <strong>${esc(r.katastralne_uzemie)}</strong>
+        <span class="badge badge-amber">${fmt(r.lvs)} LV</span>
+      </div>
+      <div class="pick-card-meta">
+        <span>kód ${fmt(r.poradove_cislo)}</span>
+        <span>${fmt(r.solo_lvs)} solo</span>
+        <span>Ø spoluvl. ${r.avg_co ?? '—'}</span>
+        <span>podiel ${r.portion ?? '—'}</span>
+      </div>
+    </button>`).join('');
+}
+
+function resolvePickedName(wanted) {
+  if (!wanted) return '';
+  const names = ovSearch.names || [];
+  if (names.some((n) => n.meno_vlastnika === wanted)) return wanted;
+  const key = nameKey(wanted);
+  const hit = names.find((n) => nameKey(n.meno_vlastnika) === key);
+  return hit ? hit.meno_vlastnika : wanted;
 }
 
 async function loadOverviewSearch(page = 1) {
@@ -789,12 +996,13 @@ async function loadOverviewSearch(page = 1) {
   }
 
   card.hidden = false;
+  document.body.classList.add('search-mode');
+  document.body.classList.remove('landing-mode');
   writeSearchUrl(q);
   setOverviewSearching(true, 'Hľadám v registri…');
-  document.getElementById('overview-search-label').textContent = `„${q}”`;
   const namesWrap = document.getElementById('overview-names-wrap');
-  const countsWrap = document.getElementById('overview-search-counts');
   if (namesWrap) namesWrap.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div>Hľadám v registri...</div>';
+  setWizardStep('names');
 
   if (ovSearchController) ovSearchController.abort();
   ovSearchController = new AbortController();
@@ -812,195 +1020,121 @@ async function loadOverviewSearch(page = 1) {
     const data = await apiFetch(`/overview-search?${params}`, { signal }).then((r) => r.json());
     if (data.error) throw new Error(data.error);
 
-    countsWrap.innerHTML = `
-      <div class="stat-card">
-        <div class="stat-label">Záznamy</div>
-        <div class="stat-value">${fmt(data.total)}</div>
-        <div class="stat-sub">zhody v registri</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Unikátne mená</div>
-        <div class="stat-value">${fmt(data.unique_names)}</div>
-        <div class="stat-sub">rôznych vlastníkov</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Obce / k.ú.</div>
-        <div class="stat-value">${fmt(data.unique_places)}</div>
-        <div class="stat-sub">unikátnych území</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Unikátne LV</div>
-        <div class="stat-value">${fmt(data.unique_lv)}</div>
-        <div class="stat-sub">listy vlastníctva</div>
-      </div>`;
-
-    ovSearch.names = groupCleanNames(data.names || []).filter((r) => matchesFolded(r.meno_vlastnika, q));
-    fillNameSelect(ovSearch.names);
+    ovSearch.names = groupCleanNames(data.names || []).filter((r) => {
+      if (ovSearch.fKu) return true;
+      return matchesFolded(r.meno_vlastnika, q) || matchesFolded(r.top_ku, q);
+    });
+    renderPlacesStrip(data.places || []);
     renderOverviewNames();
+    renderCrumb();
 
-    const placesWrap = document.getElementById('overview-places-wrap');
-    if (!data.places?.length) {
-      placesWrap.innerHTML = '<div class="empty-state">Žiadne obce</div>';
-    } else {
-      placesWrap.innerHTML = `
-        <table>
-          <thead><tr><th>Obec / k.ú.</th><th>Číslo</th><th>Mená</th><th>LV</th><th>Záznamy</th></tr></thead>
-          <tbody>
-            ${data.places.map((r) => {
-              const safeKu = esc(r.katastralne_uzemie).replace(/'/g, "\\'");
-              return `
-              <tr class="ov-click-row" onclick="onPickKuFromList('${safeKu}')" title="Zvoliť toto k.ú.">
-                <td><strong>${esc(r.katastralne_uzemie)}</strong></td>
-                <td>${fmt(r.poradove_cislo)}</td>
-                <td><span class="badge badge-blue">${fmt(r.names)}</span></td>
-                <td><span class="badge badge-amber">${fmt(r.lvs)}</span></td>
-                <td>${fmt(r.recs)}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>`;
+    const label = document.getElementById('overview-search-label');
+    if (label) {
+      const placeHint = ovSearch.fKu ? ` · obec ${ovSearch.fKu}` : '';
+      label.textContent = `${ovSearch.names.length} mien · ${(data.places || []).length} obcí${placeHint}`;
     }
 
     if (ovSearch.pickName) {
-      const sel = document.getElementById('pick-name');
-      if (sel && [...sel.options].some((o) => o.value === ovSearch.pickName)) {
-        sel.value = ovSearch.pickName;
-        await loadKuOptions(ovSearch.pickName, ovSearch.pickKu);
-        if (ovSearch.pickKu) await loadDossier(ovSearch.pickName, ovSearch.pickKu);
-      }
+      ovSearch.pickName = resolvePickedName(ovSearch.pickName);
+      await loadKuOptions(ovSearch.pickName, ovSearch.pickKu);
+    } else if (ovSearch.names.length === 1 && !ovSearch.holdNames) {
+      await onPickName(ovSearch.names[0].meno_vlastnika);
     } else {
-      hideDossier();
+      setWizardStep('names');
     }
 
-    setOverviewSearching(false, `${fmt(data.total)} záznamov`);
+    setOverviewSearching(false, label?.textContent || '');
   } catch (e) {
     if (e.name === 'AbortError') return;
     setOverviewSearching(false);
     showToast('Chyba hľadania: ' + e.message, 'error');
     const nw = document.getElementById('overview-names-wrap');
-    if (nw) nw.innerHTML = `<div class="empty-state" style="color:#ef4444">❌ ${esc(e.message)}</div>`;
+    if (nw) nw.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
   }
-}
-
-function fillNameSelect(names) {
-  const sel = document.getElementById('pick-name');
-  if (!sel) return;
-  const current = ovSearch.pickName;
-  sel.innerHTML = `<option value="">— vyber meno —</option>` + (names || []).map((r) => {
-    const n = r.meno_vlastnika;
-    return `<option value="${esc(n).replace(/"/g, '&quot;')}">${esc(n)}</option>`;
-  }).join('');
-  if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
 }
 
 function hideDossier() {
   const d = document.getElementById('overview-dossier');
-  const b = document.getElementById('overview-browse');
   if (d) { d.hidden = true; d.innerHTML = ''; }
-  if (b) b.hidden = false;
 }
 
 async function onPickName(name) {
   ovSearch.pickName = name || '';
   ovSearch.pickKu = '';
-  const kuSel = document.getElementById('pick-ku');
-  const nameSel = document.getElementById('pick-name');
-  if (nameSel && name) nameSel.value = name;
-  writeSearchUrl(ovSearch.q);
+  ovSearch.holdPlaces = false;
+  writeSearchUrl(ovSearch.q, name || '', '');
   if (!name) {
-    if (kuSel) {
-      kuSel.disabled = true;
-      kuSel.innerHTML = '<option value="">— najprv meno —</option>';
-    }
-    hideDossier();
+    setWizardStep('names');
     return;
   }
   await loadKuOptions(name);
 }
 
 async function loadKuOptions(name, preferKu) {
-  const kuSel = document.getElementById('pick-ku');
-  if (!kuSel) return;
-  kuSel.disabled = true;
-  kuSel.innerHTML = '<option value="">Načítavam k.ú.…</option>';
+  setWizardStep('places');
+  const wrap = document.getElementById('overview-ku-wrap');
+  if (wrap) wrap.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Hľadám obce pre ${esc(name)}…</div>`;
   try {
     const data = await apiFetch(`/name-districts?names=${namesParam(name)}`).then((r) => r.json());
     const rows = data.rows || [];
-    kuSel.innerHTML = `<option value="">— vyber k.ú. (${rows.length}) —</option>` + rows.map((r) => {
-      const label = `${r.katastralne_uzemie} · ${fmt(r.lvs)} LV · podiel ${r.portion}`;
-      return `<option value="${esc(r.katastralne_uzemie).replace(/"/g, '&quot;')}">${esc(label)}</option>`;
-    }).join('');
-    kuSel.disabled = false;
+    ovSearch.districts = rows;
+    renderPlaceCards(rows);
     const pick = preferKu && rows.some((r) => r.katastralne_uzemie === preferKu)
       ? preferKu
-      : (rows.length === 1 ? rows[0].katastralne_uzemie : '');
+      : '';
     if (pick) {
-      kuSel.value = pick;
-      ovSearch.pickKu = pick;
-      await loadDossier(name, pick);
+      await onPickKu(pick);
+    } else if (rows.length === 1 && !ovSearch.holdPlaces) {
+      await onPickKu(rows[0].katastralne_uzemie);
     } else {
-      hideDossier();
+      setWizardStep('places');
     }
   } catch (e) {
-    kuSel.innerHTML = `<option value="">Chyba: ${esc(e.message)}</option>`;
+    if (wrap) wrap.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
   }
 }
 
 async function onPickKuFromList(ku) {
   if (!ovSearch.pickName) {
-    showToast('Najprv vyber meno, potom k.ú.', 'info');
+    onPickPlaceChip(ku);
     return;
-  }
-  const kuSel = document.getElementById('pick-ku');
-  if (kuSel) {
-    if (![...kuSel.options].some((o) => o.value === ku)) {
-      const opt = document.createElement('option');
-      opt.value = ku;
-      opt.textContent = ku;
-      kuSel.appendChild(opt);
-    }
-    kuSel.value = ku;
-    kuSel.disabled = false;
   }
   await onPickKu(ku);
 }
 
 async function onPickKu(ku) {
   ovSearch.pickKu = ku || '';
-  writeSearchUrl(ovSearch.q);
+  writeSearchUrl(ovSearch.q, ovSearch.pickName, ku || '');
   if (!ku || !ovSearch.pickName) {
-    hideDossier();
+    setWizardStep(ovSearch.pickName ? 'places' : 'names');
     return;
   }
   await loadDossier(ovSearch.pickName, ku);
 }
 
 function clearPicks() {
-  ovSearch.pickName = '';
+  wizardBackToNames();
+}
+
+async function onPickCoowner(name) {
+  const keepKu = ovSearch.pickKu;
+  ovSearch.holdPlaces = false;
+  ovSearch.pickName = name;
   ovSearch.pickKu = '';
-  const nameSel = document.getElementById('pick-name');
-  const kuSel = document.getElementById('pick-ku');
-  if (nameSel) nameSel.value = '';
-  if (kuSel) {
-    kuSel.disabled = true;
-    kuSel.innerHTML = '<option value="">— najprv meno —</option>';
-  }
-  writeSearchUrl(ovSearch.q);
-  hideDossier();
+  await loadKuOptions(name, keepKu);
 }
 
 async function loadDossier(name, ku) {
   const box = document.getElementById('overview-dossier');
-  const browse = document.getElementById('overview-browse');
   if (!box) return;
-  box.hidden = false;
-  if (browse) browse.hidden = true;
+  setWizardStep('dossier');
   writeSearchUrl(ovSearch.q, name, ku);
   box.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Načítavam ${esc(name)} v ${esc(ku)}…</div>`;
   try {
     const data = await apiFetch(`/name-ku-detail?names=${namesParam(name)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
     if (data.error) throw new Error(data.error);
     renderDossier(data);
+    renderCrumb();
   } catch (e) {
     box.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
   }
@@ -1039,12 +1173,11 @@ function renderDossier(data) {
             <th>LV</th>
             <th>k.ú.</th>
             <th>Kód</th>
-            <th>Záznamy</th>
             <th>Neznámych</th>
             <th>Odhad podielu</th>
             <th>Zápis v registri</th>
             <th>Prevod</th>
-            <th>Kataster</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -1053,19 +1186,18 @@ function renderDossier(data) {
             const xferTxt = xfers.length
               ? xfers.map((x) => `${x.year || ''} → ${x.vlastnik_lv || ''}${x.datum_ucinnosti ? ` (${x.datum_ucinnosti})` : ''}`).join('; ')
               : '—';
-            const safeKu = esc(r.ku_name).replace(/'/g, "\\'");
+            const safeKu = jsAttr(r.ku_name);
             return `
               <tr>
-                <td><span class="badge badge-amber badge-clickable" onclick="window.openKatasterLV('${safeKu}', '${r.cislo_ku}', '${r.lv}')">📄 LV ${fmt(r.lv)} ↗</span></td>
+                <td><span class="badge badge-amber badge-clickable" onclick="window.openKatasterLV('${safeKu}', '${r.cislo_ku}', '${r.lv}')">LV ${fmt(r.lv)}</span></td>
                 <td>${esc(r.ku_name)}</td>
                 <td>${fmt(r.cislo_ku)}</td>
-                <td>${fmt(r.recs)}</td>
                 <td>${fmt(r.names_on_lv)}</td>
                 <td><strong>${r.portion ?? '—'}</strong></td>
-                <td style="max-width:220px;font-size:0.78rem;color:var(--text-secondary)">${esc(r.variants || '—')}</td>
-                <td style="max-width:200px;font-size:0.78rem">${esc(xferTxt)}</td>
+                <td class="cell-muted">${esc(r.variants || '—')}</td>
+                <td class="cell-muted">${esc(xferTxt)}</td>
                 <td><a class="btn-lv-link" target="_blank" rel="noopener"
-                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">📜 Výpis ↗</a></td>
+                      href="https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${r.lv}&cadastralUnitCode=${r.cislo_ku}&outputType=html">Výpis</a></td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -1074,46 +1206,54 @@ function renderDossier(data) {
 
   box.innerHTML = `
     <div class="dossier">
-      <div class="card-title">
-        ${esc(s.name)}
-        <span>${esc(s.ku)}${s.cislo_ku ? ` · kód ${fmt(s.cislo_ku)}` : ''}</span>
-      </div>
+      <header class="dossier-head">
+        <div>
+          <h2 class="dossier-name">${esc(s.name)}</h2>
+          <p class="dossier-place">${esc(s.ku)}${s.cislo_ku ? ` · kód ${fmt(s.cislo_ku)}` : ''}</p>
+        </div>
+        <span class="badge ${chance.cls}">Šanca ${chance.label}</span>
+      </header>
+      <p class="insight-note">
+        Odhad podielu je súčet 1/N na každom liste, kde N je počet neznámych z tohto registra — nie výmera z katastra.
+        Solo LV = na liste nie je iný neznámy; to je najlepší kandidát na väčší kus pôdy.
+      </p>
       <div class="stat-grid ov-search-stats">
         <div class="stat-card"><div class="stat-label">LV v tomto k.ú.</div><div class="stat-value">${fmt(s.lvs)}</div></div>
         <div class="stat-card"><div class="stat-label">Solo LV</div><div class="stat-value">${fmt(s.solo_lvs)}</div><div class="stat-sub">jediný neznámy na liste</div></div>
         <div class="stat-card"><div class="stat-label">Odhad podielu</div><div class="stat-value">${s.portion ?? '—'}</div><div class="stat-sub">súčet 1/N na LV</div></div>
         <div class="stat-card"><div class="stat-label">Ø spoluvlastníkov</div><div class="stat-value">${s.avg_co ?? '—'}</div><div class="stat-sub">neznámych na LV</div></div>
-        <div class="stat-card"><div class="stat-label">Šanca</div><div class="stat-value" style="font-size:1.1rem"><span class="badge ${chance.cls}">${chance.label}</span></div></div>
       </div>
       <div class="bulk-lv-bar">
-        <div>Všetko pre toto meno v tomto k.ú.</div>
-        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-          <button class="bulk-lv-btn" onclick="window.shareSearchLink()">↗ Zdieľať</button>
-          ${solo.length ? `<button class="bulk-lv-btn" style="background:linear-gradient(135deg,#10b981,#059669)" onclick="window.openAllLvs(window._soloLvs)">🌲 Otvoriť ${solo.length} solo výpisov ↗</button>` : ''}
-          ${lvs.length ? `<button class="bulk-lv-btn" onclick="window.openAllLvs(window._overviewLvs)">🚀 Otvoriť všetkých ${lvs.length} ↗</button>` : ''}
+        <div>Otvoriť výpisy z katastra pre toto meno v tomto k.ú.</div>
+        <div class="dossier-actions">
+          <button class="bulk-lv-btn" type="button" onclick="window.shareSearchLink()">Zdieľať</button>
+          ${solo.length ? `<button class="bulk-lv-btn bulk-lv-btn-solo" type="button" onclick="window.openAllLvs(window._soloLvs)">Otvoriť ${solo.length} solo výpisov</button>` : ''}
+          ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
       </div>
-      <div class="card-title" style="margin:1rem 0 .4rem">Solo LV — jediný neznámy vlastník</div>
-      <p class="insight-note">Najlepší kandidáti na väčší kus pôdy: na liste nie je iný neznámy z registra. Podiel 1.0 = celý neznámy nárok na tom LV.</p>
+      <h3 class="dossier-section">Solo LV — jediný neznámy vlastník</h3>
+      <p class="insight-note">Na liste nie je iný neznámy z registra. Podiel 1.0 = celý neznámy nárok na tom LV.</p>
       <div class="table-wrap solo-lv-table">${lvRowsHtml(solo)}</div>
-      <div class="card-title" style="margin:1.25rem 0 .4rem">Ostatné LV — zdieľané s ďalšími neznámymi</div>
+      <h3 class="dossier-section">Ostatné LV — zdieľané s ďalšími neznámymi</h3>
       <div class="table-wrap">${lvRowsHtml(shared)}</div>
-      <div class="card-title" style="margin:1rem 0 .5rem">Ďalší neznámi na tých istých LV</div>
+      <h3 class="dossier-section">Ďalší neznámi na tých istých LV</h3>
+      <p class="insight-note">Môžu to byť príbuzní alebo iní spoluvlastníci. Kliknutím prejdete na ich zápis v tom istom k.ú., ak tam sú.</p>
       <div class="table-wrap">
         ${!co.length ? '<div class="empty-state">Žiadni ďalší v registri</div>' : `
         <table>
           <thead><tr><th>Meno</th><th>Spoločné LV</th><th></th></tr></thead>
           <tbody>
             ${co.map((r) => `
-              <tr class="ov-click-row" onclick="onPickName('${esc(r.meno_vlastnika).replace(/'/g, "\\'")}')">
+              <tr class="ov-click-row" onclick="onPickCoowner('${jsAttr(r.meno_vlastnika)}')">
                 <td>${esc(r.meno_vlastnika)}</td>
                 <td><span class="badge badge-blue">${fmt(r.shared_lvs)}</span></td>
-                <td>zvoliť →</td>
+                <td>zvoliť</td>
               </tr>`).join('')}
           </tbody>
         </table>`}
       </div>
-      <div class="card-title" style="margin:1rem 0 .5rem">Prevedené práva na týchto LV</div>
+      <h3 class="dossier-section">Prevedené práva na týchto LV</h3>
+      <p class="insight-note">Ak tu je prevod z 2022–2025, časť práva už mohla prejsť na iného vlastníka (často SPF).</p>
       <div class="table-wrap">
         ${!tr.length ? '<div class="empty-state">Žiadny prevod v 2022–2025</div>' : `
         <table>
@@ -1137,6 +1277,7 @@ window.dismissSourceBanner = dismissSourceBanner;
 window.shareSearchLink = shareSearchLink;
 window.submitOverviewSearch = submitOverviewSearch;
 window.onOverviewSearchInput = onOverviewSearchInput;
+window.onHeaderSearchInput = onHeaderSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
@@ -1144,7 +1285,11 @@ window.showNameDistricts = showNameDistricts;
 window.onPickName = onPickName;
 window.onPickKu = onPickKu;
 window.onPickKuFromList = onPickKuFromList;
+window.onPickPlaceChip = onPickPlaceChip;
+window.onPickCoowner = onPickCoowner;
 window.clearPicks = clearPicks;
+window.wizardBackToNames = wizardBackToNames;
+window.wizardBackToPlaces = wizardBackToPlaces;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
@@ -3020,6 +3165,7 @@ window.dismissSourceBanner = dismissSourceBanner;
 window.shareSearchLink = shareSearchLink;
 window.submitOverviewSearch = submitOverviewSearch;
 window.onOverviewSearchInput = onOverviewSearchInput;
+window.onHeaderSearchInput = onHeaderSearchInput;
 window.onOverviewSearchKeydown = onOverviewSearchKeydown;
 window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
@@ -3027,7 +3173,11 @@ window.showNameDistricts = showNameDistricts;
 window.onPickName = onPickName;
 window.onPickKu = onPickKu;
 window.onPickKuFromList = onPickKuFromList;
+window.onPickPlaceChip = onPickPlaceChip;
+window.onPickCoowner = onPickCoowner;
 window.clearPicks = clearPicks;
+window.wizardBackToNames = wizardBackToNames;
+window.wizardBackToPlaces = wizardBackToPlaces;
 window.filterOverviewPlace = filterOverviewPlace;
 window.openOverviewInOwners = openOverviewInOwners;
 window.loadOverviewSearch = loadOverviewSearch;
@@ -3063,18 +3213,19 @@ async function boot() {
     ovSearch.pickName = (params.get('name') || '').trim();
     ovSearch.pickKu = (params.get('ku') || '').trim();
     tabLoaded['overview'] = true;
+    showTab('overview');
     if (sharedQ.length >= 2 || ovSearch.pickName) {
-      const input = document.getElementById('overview-search');
       const q = sharedQ || ovSearch.pickName;
-      if (input) input.value = q;
+      syncSearchInputs(q);
       ovSearch.q = q;
       document.body.classList.add('search-mode');
-      showTab('overview');
+      document.body.classList.remove('landing-mode');
       setOverviewSearching(true, `Hľadám „${q}“…`);
       await loadOverviewSearch(1);
       loadOverview();
     } else {
-      showTab('map');
+      document.body.classList.add('landing-mode');
+      document.body.classList.remove('search-mode');
       loadOverview();
     }
   } catch (e) {
@@ -3088,19 +3239,23 @@ async function boot() {
 }
 
 window.addEventListener('popstate', () => {
+  const params = new URLSearchParams(location.search);
   const q = searchQueryFromUrl();
-  const input = document.getElementById('overview-search');
-  if (input) input.value = q;
+  syncSearchInputs(q);
   ovSearch.q = q;
   ovSearch.fName = '';
   ovSearch.fKu = '';
-  if (q.length >= 2) {
+  ovSearch.pickName = (params.get('name') || '').trim();
+  ovSearch.pickKu = (params.get('ku') || '').trim();
+  if (q.length >= 2 || ovSearch.pickName) {
     showTab('overview');
     loadOverviewSearch(1);
   } else {
     const card = document.getElementById('overview-search-card');
     if (card) card.hidden = true;
-    document.title = 'PZF Data Explorer — Neznámi vlastníci';
+    document.body.classList.add('landing-mode');
+    document.body.classList.remove('search-mode');
+    document.title = 'PZF Explorer — Neznámi vlastníci';
   }
 });
 

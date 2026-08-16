@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PZF Data Explorer — Neznámi vlastníci</title>
-  <meta name="description" content="Analytický dashboard pre dáta Pozemkového fondu SR — neznámi vlastníci a prevedené práva.">
+  <title>PZF Explorer — Neznámi vlastníci</title>
+  <meta name="description" content="Vyhľadajte meno v registri nezistených vlastníkov Slovenského pozemkového fondu. Zvoľte správny zápis a katastrálne územie.">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
-<body>
+<body class="landing-mode">
 
 <div id="boot-overlay">
   <div class="boot-card">
@@ -27,28 +27,41 @@
 ══════════════════════════════════════════════════════════════ -->
 <header class="header">
   <div class="header-inner">
-    <div class="logo">
-      <span class="logo-icon">🏛️</span>
+    <button type="button" class="logo" id="nav-overview" onclick="goHome()" title="Späť na hľadanie">
+      <span class="logo-icon" aria-hidden="true"></span>
       <span class="logo-text">PZF Explorer</span>
-      <span class="logo-badge">DuckDB WASM</span>
-    </div>
+    </button>
 
-    <nav class="nav">
-      <button class="nav-btn" onclick="showTab('overview')" id="nav-overview">📊 Prehľad</button>
-      <button class="nav-btn" onclick="showTab('solo')" id="nav-solo">🌲 Solo LV</button>
-      <button class="nav-btn" onclick="showTab('owners')"   id="nav-owners">👥 Neznámi vlastníci</button>
-      <button class="nav-btn" onclick="showTab('transferred')" id="nav-transferred">📋 Prevedené práva</button>
-      <button class="nav-btn" onclick="showTab('overlap')"  id="nav-overlap">🔗 Prienik dát</button>
-      <button class="nav-btn" onclick="showTab('correlations')" id="nav-correlations">📈 Korelácie</button>
-      <button class="nav-btn" onclick="showTab('lv-analysis')" id="nav-lv-analysis">🌲 Analýza LV</button>
-      <button class="nav-btn active" onclick="showTab('map')"     id="nav-map">🗺️ Mapa SK</button>
-      <button class="nav-btn" onclick="showTab('sql')"     id="nav-sql">💻 SQL Query</button>
-    </nav>
+    <form class="header-search" id="header-search-form" onsubmit="submitOverviewSearch(event)">
+      <input type="search" class="search-input" id="header-search"
+             placeholder="Hľadať meno alebo obec…"
+             enterkeyhint="search" inputmode="search"
+             autocomplete="off" autocorrect="off" spellcheck="false"
+             oninput="onHeaderSearchInput(this.value)"
+             onkeydown="onOverviewSearchKeydown(event)"
+             aria-label="Hľadať meno">
+      <button type="submit" class="header-search-go" aria-label="Hľadať">Hľadať</button>
+    </form>
 
     <div class="header-right">
       <div class="db-status">
         <div class="db-dot loading" id="db-dot"></div>
         <span id="db-status-text">Načítavam...</span>
+      </div>
+      <div class="reg-wrap" id="reg-wrap">
+        <button type="button" class="nav-btn reg-toggle" id="reg-toggle" onclick="toggleRegMenu()" aria-expanded="false" aria-controls="reg-dropdown">
+          Register
+        </button>
+        <div class="reg-dropdown" id="reg-dropdown" hidden>
+          <button class="nav-btn" onclick="showTab('solo')" id="nav-solo">Solo LV</button>
+          <button class="nav-btn" onclick="showTab('owners')" id="nav-owners">Neznámi vlastníci</button>
+          <button class="nav-btn" onclick="showTab('transferred')" id="nav-transferred">Prevedené práva</button>
+          <button class="nav-btn" onclick="showTab('overlap')" id="nav-overlap">Prienik dát</button>
+          <button class="nav-btn" onclick="showTab('correlations')" id="nav-correlations">Korelácie</button>
+          <button class="nav-btn" onclick="showTab('lv-analysis')" id="nav-lv-analysis">Analýza LV</button>
+          <button class="nav-btn" onclick="showTab('map')" id="nav-map">Mapa SK</button>
+          <button class="nav-btn" onclick="showTab('sql')" id="nav-sql">SQL</button>
+        </div>
       </div>
     </div>
   </div>
@@ -73,69 +86,64 @@
   <!-- ── TAB: OVERVIEW ─────────────────────────────────────────── -->
   <div class="tab active" id="tab-overview">
 
-    <!-- Hero Stats -->
-    <div class="hero animate-in">
-      <div class="hero-content">
-        <h1 class="hero-title">Neznámi vlastníci pôdy — SK</h1>
-        <p class="hero-subtitle">Stav k 30.06.2026 · Databáza Slovenského pozemkového fondu</p>
-        <form class="hero-search" id="overview-search-form" onsubmit="submitOverviewSearch(event)">
-          <div class="hero-search-field">
-            <input type="search" class="search-input" id="overview-search"
-                   placeholder="Meno alebo obec — Košč Ján = kosc jan"
-                   enterkeyhint="search" inputmode="search"
-                   autocomplete="off" autocorrect="off" spellcheck="false"
-                   oninput="onOverviewSearchInput(this.value)"
-                   onkeydown="onOverviewSearchKeydown(event)">
-            <button type="submit" class="hero-search-go" id="overview-search-go" aria-label="Hľadať">
-              <span class="hero-search-go-icon">🔍</span>
-              <span class="hero-search-go-spin" aria-hidden="true"></span>
-            </button>
-          </div>
-          <div class="hero-search-actions">
-            <button class="btn btn-ghost" type="button" onclick="shareSearchLink()" title="Kopírovať odkaz">↗ Zdieľať</button>
-            <button class="btn btn-ghost" type="button" onclick="clearOverviewSearch()">Zrušiť</button>
-          </div>
-          <p class="hero-search-status" id="overview-search-status" hidden>Hľadám v registri…</p>
-        </form>
-      </div>
+    <section class="landing" id="landing-hero">
+      <h1 class="hero-title">Nájdite meno v registri nezistených vlastníkov</h1>
+      <p class="hero-subtitle">Zadajte priezvisko alebo celé meno. Ukážeme zápisy a obce — vyberiete ten správny.</p>
+      <form class="hero-search" id="overview-search-form" onsubmit="submitOverviewSearch(event)">
+        <div class="hero-search-field">
+          <input type="search" class="search-input" id="overview-search"
+                 placeholder="Napr. Košč Ján alebo Kuzmiak"
+                 enterkeyhint="search" inputmode="search"
+                 autocomplete="off" autocorrect="off" spellcheck="false"
+                 oninput="onOverviewSearchInput(this.value)"
+                 onkeydown="onOverviewSearchKeydown(event)">
+          <button type="submit" class="hero-search-go" id="overview-search-go" aria-label="Hľadať">
+            <span class="hero-search-go-icon">Hľadať</span>
+            <span class="hero-search-go-spin" aria-hidden="true"></span>
+          </button>
+        </div>
+        <p class="hero-search-status" id="overview-search-status" hidden>Hľadám v registri…</p>
+      </form>
+      <p class="landing-scale" id="landing-scale">Načítavam register…</p>
+      <p class="landing-trust">
+        Register nezistených vlastníkov · stav k 30.06.2026 ·
+        <a href="https://pozfond.sk/verejny-pristup-k-informaciam/zoznam-nezistenych-vlastnikov/" target="_blank" rel="noopener">pozfond.sk</a>
+      </p>
+    </section>
+
+    <div class="wizard" id="overview-search-card" hidden>
+      <nav class="wizard-bar" aria-label="Postup hľadania">
+        <ol class="crumb" id="wizard-crumb"></ol>
+        <div class="wizard-actions">
+          <button class="btn btn-ghost" type="button" onclick="shareSearchLink()" title="Kopírovať odkaz">Zdieľať</button>
+          <button class="btn btn-ghost" type="button" onclick="clearOverviewSearch()">Nové hľadanie</button>
+        </div>
+      </nav>
+      <p class="wizard-status" id="overview-search-label"></p>
+      <div class="stat-grid ov-search-stats" id="overview-search-counts" hidden></div>
+
+      <section class="wizard-step" id="step-places-strip" hidden>
+        <h2 class="step-title">Obce v hľadaní</h2>
+        <p class="insight-note">Ak ste hľadali obec, zvoľte ju — potom vyberte meno.</p>
+        <div class="chip-row" id="overview-places-wrap"></div>
+      </section>
+
+      <section class="wizard-step" id="step-names">
+        <h2 class="step-title" id="step-names-title">Ktoré meno?</h2>
+        <p class="insight-note">Rovnaká osoba môže byť v registri zapísaná viacerými spôsobmi. Zvoľte zhodu.</p>
+        <div class="pick-grid" id="overview-names-wrap"></div>
+      </section>
+
+      <section class="wizard-step" id="step-places" hidden>
+        <h2 class="step-title" id="step-places-title">Ktoré katastrálne územie?</h2>
+        <p class="insight-note">Jedno meno môže byť na viacerých obciach. Zvoľte miesto, ktoré hľadáte.</p>
+        <div class="pick-grid" id="overview-ku-wrap"></div>
+      </section>
+
+      <section class="wizard-step" id="overview-dossier" hidden></section>
     </div>
 
-    <div class="card animate-in" id="overview-search-card" hidden>
-      <div class="card-title">
-        Výsledky hľadania
-        <span id="overview-search-label"></span>
-      </div>
-      <div class="stat-grid ov-search-stats" id="overview-search-counts"></div>
-
-      <div class="pick-bar" id="overview-pick-bar">
-        <label class="pick-field">
-          <span>Meno</span>
-          <select id="pick-name" onchange="onPickName(this.value)">
-            <option value="">— vyber meno —</option>
-          </select>
-        </label>
-        <label class="pick-field">
-          <span>Katast. územie</span>
-          <select id="pick-ku" onchange="onPickKu(this.value)" disabled>
-            <option value="">— najprv meno —</option>
-          </select>
-        </label>
-        <button class="btn btn-ghost" type="button" onclick="clearPicks()">Zrušiť výber</button>
-      </div>
-
-      <div id="overview-dossier" hidden></div>
-
-      <div id="overview-browse" style="margin:1.25rem 0">
-        <div class="card-title" style="margin-bottom:.35rem">Unikátne mená — klikni meno, potom k.ú.</div>
-        <p class="insight-note">
-          Odhad podielu = 1/N na LV (N = neznámi na tom liste). Solo LV = jediný neznámy. Nie je to výmera z katastra.
-        </p>
-        <div class="table-wrap" id="overview-names-wrap"></div>
-        <div class="card-title" style="margin:1rem 0 .75rem">Obce v hľadaní</div>
-        <div class="table-wrap" id="overview-places-wrap"></div>
-      </div>
-    </div>
-
+    <div class="overview-dashboard" id="overview-dashboard" hidden>
     <div class="hero animate-in" id="global-stats-hero">
       <div class="hero-content">
         <div class="stat-grid" id="stats-grid">
@@ -202,6 +210,7 @@
         </div>
       </div>
     </div>
+    </div><!-- /overview-dashboard -->
 
   </div><!-- /tab-overview -->
 

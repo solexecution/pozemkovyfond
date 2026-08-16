@@ -452,7 +452,7 @@ async function overviewSearch(q) {
 
   const nameConds = [];
   const namePred = tokenPred('meno_norm', raw);
-  if (namePred) nameConds.push(namePred);
+  if (namePred && !fKu) nameConds.push(namePred);
   if (fName) nameConds.push(foldedNamePred([fName]));
   const kuPred = tokenPred('ku_norm', fKu, { prefixFirst: false });
   if (kuPred) nameConds.push(kuPred);
