@@ -810,7 +810,7 @@ app.get('/api/all-unique-lvs', async (req, res) => {
 /** GET /api/lv-analysis — Run correlation & m2 ownership analysis across stored LVs */
 app.get('/api/lv-analysis', async (req, res) => {
   try {
-    const searchName = (req.query.name || 'kuzmiak').trim();
+    const searchName = (req.query.name || 'horvath').trim();
 
     // Total stored LVs matching search name (multi-token accent insensitive)
     const lvBreakdown = await queryObjects(`

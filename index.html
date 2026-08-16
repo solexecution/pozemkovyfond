@@ -63,9 +63,11 @@
         <div class="db-dot loading" id="db-dot"></div>
         <span id="db-status-text">Načítavam...</span>
       </div>
+      <button type="button" class="nav-btn map-btn" id="nav-map" onclick="showTab('map')">Mapa</button>
       <div class="reg-wrap" id="reg-wrap">
-        <button type="button" class="nav-btn reg-toggle" id="reg-toggle" onclick="toggleRegMenu()" aria-expanded="false" aria-controls="reg-dropdown">
-          Register
+        <button type="button" class="nav-btn reg-toggle" id="reg-toggle" onclick="toggleRegMenu()" aria-expanded="false" aria-controls="reg-dropdown" title="Ďalšie nástroje" aria-label="Ďalšie nástroje">
+          <span class="reg-toggle-label">Nástroje</span>
+          <span class="reg-toggle-handle" aria-hidden="true"></span>
         </button>
         <div class="reg-dropdown" id="reg-dropdown" hidden>
           <button class="nav-btn" onclick="showTab('solo')" id="nav-solo">Solo LV</button>
@@ -74,7 +76,6 @@
           <button class="nav-btn" onclick="showTab('overlap')" id="nav-overlap">Prienik dát</button>
           <button class="nav-btn" onclick="showTab('correlations')" id="nav-correlations">Korelácie</button>
           <button class="nav-btn" onclick="showTab('lv-analysis')" id="nav-lv-analysis">Analýza LV</button>
-          <button class="nav-btn" onclick="showTab('map')" id="nav-map">Mapa SK</button>
           <button class="nav-btn" onclick="showTab('sql')" id="nav-sql">SQL</button>
         </div>
       </div>
@@ -107,7 +108,7 @@
       <form class="hero-search" id="overview-search-form" onsubmit="submitOverviewSearch(event)">
         <div class="hero-search-field">
           <input type="search" class="search-input" id="overview-search"
-                 placeholder="Napr. Košč Ján alebo Kuzmiak"
+                 placeholder="Napr. Horváth Ján"
                  enterkeyhint="search" inputmode="search"
                  autocomplete="off" autocorrect="off" spellcheck="false"
                  oninput="onOverviewSearchInput(this.value)"
@@ -244,7 +245,7 @@
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
           <input type="text" class="search-input" id="solo-name-filter"
-                 placeholder="Meno (Košč Ján = kosc jan)…"
+                 placeholder="Meno (Horváth Ján = horvath jan)…"
                  oninput="onSoloNameInput(this.value)"
                  enterkeyhint="search">
         </div>
@@ -272,7 +273,7 @@
       <div class="search-bar">
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
-          <input type="text" class="search-input" id="owner-search" placeholder="Hľadaj meno (Košč = kosc)..." oninput="onOwnerTopInput('name', this.value)">
+          <input type="text" class="search-input" id="owner-search" placeholder="Hľadaj meno (Horváth = horvath)..." oninput="onOwnerTopInput('name', this.value)">
         </div>
         <div class="search-input-wrap" style="max-width:220px">
           <span class="search-icon">📍</span>
@@ -398,7 +399,7 @@
           </div>
         </div>
         <div style="display:flex;gap:0.5rem">
-          <input type="text" class="search-input" id="lv-analysis-search" placeholder="Zadaj meno pre analýzu (napr. kuzmiak michal)..." style="width:280px">
+          <input type="text" class="search-input" id="lv-analysis-search" placeholder="Zadaj meno pre analýzu (napr. horvath jan)..." style="width:280px">
           <button class="btn" onclick="runLvAnalysisUI()">🔍 Analyzovať</button>
         </div>
       </div>

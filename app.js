@@ -1691,7 +1691,7 @@ window.openAllLvs = openAllLvs;
 async function enrichAndAnalyzeLvs(lvs) {
   const searchBox = (document.getElementById('owner-search')?.value || '').trim();
   const colNameFilter = (ownerState.colFilters.name || '').trim();
-  const currentSearchName = searchBox || colNameFilter || 'kuzmiak';
+  const currentSearchName = searchBox || colNameFilter || 'horvath';
   
   // 1. Immediately switch to Analýza LV tab so the user sees action right away!
   showTab('lv-analysis');
@@ -1785,7 +1785,7 @@ window._refetchAllLvs = async function(name) {
 };
 
 async function loadLvAnalysis(searchName) {
-  const q = searchName || (document.getElementById('lv-analysis-search')?.value || 'kuzmiak michal');
+  const q = searchName || (document.getElementById('lv-analysis-search')?.value || 'horvath jan');
   showToast(`🔍 Analýza vlastnených pozemkov pre: ${q}...`, 'info');
 
   try {

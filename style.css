@@ -134,7 +134,15 @@ body.register-view .header-search {
 }
 
 .reg-wrap { position: relative; }
-.reg-toggle { font-weight: 600; }
+.reg-toggle { font-weight: 600; display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 32px; }
+.reg-toggle-handle {
+  display: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: -6px 0 0 currentColor, 6px 0 0 currentColor;
+}
 .reg-dropdown {
   position: absolute;
   right: 0;
@@ -1038,6 +1046,17 @@ th.has-filter .sort-ic { opacity: 1; }
 
 /* ── Search-first landing & wizard ── */
 body.landing-mode .header-search { display: none; }
+body.landing-mode .db-status { display: none; }
+body.landing-mode .reg-wrap { display: none; }
+body.landing-mode .source-banner { display: none; }
+body.landing-mode .map-btn {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+body.landing-mode .map-btn:hover,
+body.landing-mode .map-btn.active {
+  color: var(--text-accent);
+}
 body.search-mode #landing-hero,
 body.register-view #landing-hero { display: none; }
 body.search-mode #overview-dashboard,

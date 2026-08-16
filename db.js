@@ -926,7 +926,7 @@ async function correlations() {
 }
 
 async function lvAnalysis(q) {
-  const searchName = (q.name || 'kuzmiak').trim();
+  const searchName = (q.name || 'horvath').trim();
   const lvBreakdown = await queryObjects(`
     SELECT
       o.lv,
