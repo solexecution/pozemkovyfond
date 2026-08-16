@@ -1047,8 +1047,9 @@ th.has-filter .sort-ic { opacity: 1; }
 /* ── Search-first landing & wizard ── */
 body.landing-mode .header-search { display: none; }
 body.landing-mode .db-status { display: none; }
-body.landing-mode .reg-wrap { display: none; }
 body.landing-mode .source-banner { display: none; }
+#reg-wrap { display: none; }
+body.adm #reg-wrap { display: block; }
 body.landing-mode .map-btn {
   color: var(--text-secondary);
   font-weight: 600;

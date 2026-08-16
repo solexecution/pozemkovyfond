@@ -273,6 +273,16 @@ function restoreFocus(info) {
   }
 }
 
+function isAdm() {
+  if (window.PZF_ADM) return true;
+  const path = (location.pathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return /(^|\/)adm$/i.test(path) || /(^|\/)adm\/index\.html$/i.test(path);
+}
+if (isAdm()) {
+  window.PZF_ADM = true;
+  document.body.classList.add('adm');
+}
+
 // ── Tab Navigation ─────────────────────────────────────────────────────────
 const tabLoaded = {};
 function closeRegMenu() {

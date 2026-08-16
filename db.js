@@ -13,11 +13,11 @@ let geoJsonCache = null;
 let cachedStats = null;
 
 function dataUrl(name) {
-  return new URL(`data/${name}`, window.location.href).href;
+  return new URL(`data/${name}`, document.baseURI).href;
 }
 
 function assetUrl(name) {
-  return new URL(name, window.location.href).href;
+  return new URL(name, document.baseURI).href;
 }
 
 function setStatus(text, kind = 'loading') {

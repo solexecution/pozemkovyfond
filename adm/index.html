@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PZF Explorer</title>
+  <base href="../">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    window.PZF_ADM = true;
+    window.PZF_UMAMI_WEBSITE_ID = '3f350104-b87f-4647-b5cd-6a870702a2a3';
+  </script>
+  <script>
+    (function loadUmami() {
+      var id = window.PZF_UMAMI_WEBSITE_ID;
+      if (!id || id.length < 8) return;
+      var s = document.createElement('script');
+      s.defer = true;
+      s.src = 'https://cloud.umami.is/script.js';
+      s.setAttribute('data-website-id', id);
+      s.setAttribute('data-domains', 'solexecution.github.io,localhost');
+      document.head.appendChild(s);
+    })();
+  </script>
+</head>
+<body class="landing-mode adm">
+<div id="boot-overlay">
+  <div class="boot-card">
+    <div class="boot-logo">PZF Explorer</div>
+    <p id="boot-msg">Načítavam…</p>
+  </div>
+</div>
+<script type="module">
+  try {
+    const res = await fetch(new URL('index.html', document.baseURI));
+    if (!res.ok) throw new Error('index.html ' + res.status);
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const incoming = document.importNode(doc.body, true);
+    incoming.querySelectorAll('script').forEach((s) => s.remove());
+    incoming.classList.add('adm');
+    document.body.replaceWith(incoming);
+    document.body.classList.add('adm');
+    await import(new URL('app.js', document.baseURI).href);
+  } catch (e) {
+    const msg = document.getElementById('boot-msg');
+    if (msg) msg.textContent = 'Chyba načítania: ' + (e && e.message ? e.message : e);
+    console.error(e);
+  }
+</script>
+</body>
+</html>
