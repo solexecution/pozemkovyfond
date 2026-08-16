@@ -162,6 +162,60 @@ function installTableSortObserver() {
 }
 installTableSortObserver();
 
+const _trackQueue = [];
+let _trackTimer = null;
+let _searchTrackTimer = null;
+
+function trackVal(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  return String(v).replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+function track(event, data) {
+  const payload = {};
+  if (data && typeof data === 'object') {
+    for (const [k, v] of Object.entries(data)) {
+      const n = trackVal(v);
+      if (n === null || n === '') continue;
+      payload[k] = n;
+    }
+  }
+  const send = () => {
+    if (typeof umami === 'object' && typeof umami.track === 'function') {
+      try { umami.track(event, payload); } catch (_) {}
+      return true;
+    }
+    return false;
+  };
+  if (send()) return;
+  _trackQueue.push([event, payload]);
+  if (_trackTimer) return;
+  const started = Date.now();
+  _trackTimer = setInterval(() => {
+    if (typeof umami === 'object' && typeof umami.track === 'function') {
+      while (_trackQueue.length) {
+        const [name, d] = _trackQueue.shift();
+        try { umami.track(name, d); } catch (_) {}
+      }
+      clearInterval(_trackTimer);
+      _trackTimer = null;
+      return;
+    }
+    if (Date.now() - started > 10000) {
+      _trackQueue.length = 0;
+      clearInterval(_trackTimer);
+      _trackTimer = null;
+    }
+  }, 300);
+}
+
+function trackSearchSettled(data) {
+  clearTimeout(_searchTrackTimer);
+  _searchTrackTimer = setTimeout(() => track('search', data), 800);
+}
+
 function showToast(msg, type = 'info') {
   const t = document.getElementById('toast');
   if (!t) return;
@@ -181,6 +235,12 @@ function openKatasterLV(kuName, kuCislo, lv) {
   } catch (_) {}
 
   const cleanCislo = kuCislo ? String(kuCislo).trim() : '';
+  track('kataster', {
+    name: ovSearch?.pickName || '',
+    ku: kuText,
+    ku_code: cleanCislo,
+    lv,
+  });
   if (cleanCislo) {
     showToast(`📜 Otváram priamy Výpis z LV č. ${lv} (${kuText})...`, 'success');
     window.open(`https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${lv}&cadastralUnitCode=${cleanCislo}&outputType=html`, '_blank');
@@ -258,6 +318,7 @@ function showTab(name) {
   if (nav) nav.classList.add('active');
   document.body.classList.toggle('register-view', name !== 'overview');
   if (name !== 'overview') document.body.classList.remove('landing-mode');
+  if (name !== 'overview') track('tab', { tab: name });
   if (!tabLoaded[name]) {
     tabLoaded[name] = true;
     switch (name) {
@@ -620,6 +681,7 @@ function shareSearchLink() {
     return;
   }
   writeSearchUrl(q);
+  track('share', { q, name: ovSearch.pickName, ku: ovSearch.pickKu });
   const link = location.href;
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(link).then(
@@ -941,6 +1003,7 @@ function onPickPlaceChip(ku) {
   ovSearch.pickName = '';
   ovSearch.pickKu = '';
   ovSearch.holdNames = false;
+  track('place_chip', { q: ovSearch.q, ku: ovSearch.fKu || ku });
   loadOverviewSearch(1);
 }
 
@@ -1044,6 +1107,16 @@ async function loadOverviewSearch(page = 1) {
     }
 
     setOverviewSearching(false, label?.textContent || '');
+    const topNames = ovSearch.names.slice(0, 8).map((r) => r.meno_vlastnika).join(' | ');
+    const topPlaces = (data.places || []).slice(0, 8).map((r) => r.katastralne_uzemie).join(' | ');
+    trackSearchSettled({
+      q,
+      place: ovSearch.fKu,
+      names: topNames,
+      places: topPlaces,
+      name_count: ovSearch.names.length,
+      place_count: (data.places || []).length,
+    });
   } catch (e) {
     if (e.name === 'AbortError') return;
     setOverviewSearching(false);
@@ -1067,6 +1140,16 @@ async function onPickName(name) {
     setWizardStep('names');
     return;
   }
+  const row = (ovSearch.names || []).find((r) => r.meno_vlastnika === name);
+  track('pick_name', {
+    q: ovSearch.q,
+    name,
+    variants: (row?.variants || []).slice(0, 6).join(' | '),
+    ku: row?.top_ku,
+    lvs: row?.lvs,
+    solo: row?.solo_lvs,
+    portion: row?.portion,
+  });
   await loadKuOptions(name);
 }
 
@@ -1109,6 +1192,15 @@ async function onPickKu(ku) {
     setWizardStep(ovSearch.pickName ? 'places' : 'names');
     return;
   }
+  const row = (ovSearch.districts || []).find((r) => r.katastralne_uzemie === ku);
+  track('pick_place', {
+    q: ovSearch.q,
+    name: ovSearch.pickName,
+    ku,
+    lvs: row?.lvs,
+    solo: row?.solo_lvs,
+    portion: row?.portion,
+  });
   await loadDossier(ovSearch.pickName, ku);
 }
 
@@ -1121,6 +1213,7 @@ async function onPickCoowner(name) {
   ovSearch.holdPlaces = false;
   ovSearch.pickName = name;
   ovSearch.pickKu = '';
+  track('pick_coowner', { q: ovSearch.q, name, ku: keepKu });
   await loadKuOptions(name, keepKu);
 }
 
@@ -1163,6 +1256,16 @@ function renderDossier(data) {
   });
   window._overviewLvs = lvs.map((r) => ({ lv: r.lv, ku: r.cislo_ku, kuName: r.ku_name }));
   window._soloLvs = solo.map((r) => ({ lv: r.lv, ku: r.cislo_ku, kuName: r.ku_name }));
+  track('view_dossier', {
+    q: ovSearch.q,
+    name: s.name,
+    ku: s.ku,
+    lvs: s.lvs,
+    solo: s.solo_lvs,
+    portion: s.portion,
+    transfers: tr.length,
+    coowners: co.slice(0, 8).map((r) => r.meno_vlastnika).join(' | '),
+  });
 
   function lvRowsHtml(list) {
     if (!list.length) return '<div class="empty-state">Žiadne LV v tejto skupine</div>';
@@ -1571,6 +1674,11 @@ function sortOwners(col) {
 
 function openAllLvs(lvs) {
   if (!lvs || !lvs.length) return;
+  track('open_lvs', {
+    name: ovSearch.pickName,
+    ku: ovSearch.pickKu,
+    count: lvs.length,
+  });
   showToast(`🚀 Otváram ${lvs.length} unikátnych výpisov z Katastra...`, 'success');
   lvs.forEach((item, i) => {
     setTimeout(() => {
