@@ -274,14 +274,106 @@ function trackSearchSettled(data) {
   _searchTrackTimer = setTimeout(() => track('search', data), 800);
 }
 
-function showToast(msg, type = 'info') {
+let _toastTimer = null;
+function showToast(msg, type = 'info', opts = {}) {
   const t = document.getElementById('toast');
   if (!t) return;
-  t.textContent = msg;
+  clearTimeout(_toastTimer);
+  t.replaceChildren();
+  const text = document.createElement('span');
+  text.className = 'toast-msg';
+  text.textContent = msg;
+  t.appendChild(text);
+  if (opts.actionLabel && typeof opts.onAction === 'function') {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action';
+    btn.textContent = opts.actionLabel;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      t.classList.remove('show');
+      opts.onAction();
+    });
+    t.appendChild(btn);
+  }
   t.style.borderLeft = `3px solid ${type === 'error' ? '#ef4444' : type === 'success' ? '#10b981' : '#3b82f6'}`;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3000);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), opts.ms || 3000);
 }
+
+function vypisWindowName(ku, lv) {
+  return `pzf-vypis-${ku || 'ku'}-${lv || 'lv'}`;
+}
+
+function copyKuLvToClipboard(kuName, ku, lv) {
+  const kuText = String(kuName || '').trim();
+  const info = `${kuText}${ku ? ` (k.ú. ${ku})` : ''}, LV ${lv}`;
+  try {
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(info);
+  } catch (_) {}
+}
+
+function showCaptchaToast() {
+  showToast(
+    'To „Nie som robot“ je Kataster (ÚGKK), nie my. Zaškrtnite checkbox — výpis sa načíta. k.ú. + LV sú v schránke.',
+    'info',
+    { ms: 10000, actionLabel: 'Ako nájsť parcelu', onAction: openParcelHelp },
+  );
+}
+
+function lvPortalHintHtml() {
+  return `<p class="lv-portal-hint">
+    Výpis ide na Kataster (ÚGKK) — tam je „Nie som robot“. ZBGIS skočí na parcelu, len ak ju máme uloženú.
+    <button type="button" class="lv-portal-help-btn">Ako nájsť parcelu</button>
+  </p>`;
+}
+
+function ensureParcelHelpModal() {
+  let el = document.getElementById('parcel-help-modal');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'parcel-help-modal';
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="parcel-help-dialog" role="dialog" aria-modal="true" aria-labelledby="parcel-help-title">
+      <div class="parcel-help-head">
+        <h2 id="parcel-help-title">Ako nájsť parcelu</h2>
+        <button type="button" class="vypis-close" id="parcel-help-close" aria-label="Zavrieť">×</button>
+      </div>
+      <div class="parcel-help-body">
+        <p>Nové hľadania často nemajú čísla parciel u nás. ZBGIS preto neskočí na pozemok. Treba to z Katastra.</p>
+        <ol>
+          <li><strong>Výpis.</strong> Otvorí sa Kataster (ÚGKK). Zaškrtnite „Nie som robot“ — to nie sme my. Potom sa výpis načíta. k.ú. + LV už sú v schránke.</li>
+          <li><strong>ČASŤ A: MAJETKOVÁ PODSTATA.</strong> Tam sú parcely registra C a E. Zoberte číslo parcely.</li>
+          <li><strong>MAPKA</strong> (téma Kataster nehnuteľností). Do poľa <strong>Vyhľadávanie</strong> zadajte obec alebo k.ú. a stlačte <strong>zámok</strong> (hľadať len v tom území). Potom zadajte <strong>číslo parcely</strong> alebo <strong>číslo LV</strong> a kliknite na výsledok.</li>
+          <li>Alebo v mape otvorte <strong>Informácie z mapy</strong> a kliknite na pozemok.</li>
+        </ol>
+        <button type="button" class="btn" id="parcel-help-done">Zavrieť</button>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  const close = () => {
+    el.hidden = true;
+    document.body.classList.remove('parcel-help-open');
+  };
+  el.addEventListener('click', (e) => { if (e.target === el) close(); });
+  el.querySelector('#parcel-help-close').addEventListener('click', close);
+  el.querySelector('#parcel-help-done').addEventListener('click', close);
+  return el;
+}
+
+function openParcelHelp() {
+  const el = ensureParcelHelpModal();
+  el.hidden = false;
+  document.body.classList.add('parcel-help-open');
+}
+function closeParcelHelp() {
+  const el = document.getElementById('parcel-help-modal');
+  if (!el) return;
+  el.hidden = true;
+  document.body.classList.remove('parcel-help-open');
+}
+window.openParcelHelp = openParcelHelp;
 
 function katasterVypisUrl(lv, kuCode) {
   return `https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${encodeURIComponent(lv)}&cadastralUnitCode=${encodeURIComponent(kuCode)}&outputType=html`;
@@ -714,7 +806,11 @@ async function openZbgisMap({ lv, ku, kuName = '', district = '' } = {}) {
   }
   if (!loc) {
     if (pending) pending.close();
-    showToast('Neviem nájsť polohu k.ú. na ZBGIS mape.', 'error');
+    showToast('Neviem nájsť polohu k.ú. na ZBGIS mape.', 'error', {
+      ms: 9000,
+      actionLabel: 'Ako nájsť parcelu',
+      onAction: openParcelHelp,
+    });
     return;
   }
   track('zbgis', {
@@ -735,22 +831,28 @@ async function openZbgisMap({ lv, ku, kuName = '', district = '' } = {}) {
   } else if (loc.source === 'ku-centroid') {
     const why = loc.parcelAttempted
       ? 'geometriu parcely sa nepodarilo načítať'
-      : 'parcely tohto LV nie sú v databáze';
-    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (${why})`, 'info');
+      : 'parcely tohto LV nemáme — mapa je len na k.ú.';
+    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (${why})`, 'info', {
+      ms: 10000,
+      actionLabel: 'Ako nájsť parcelu',
+      onAction: openParcelHelp,
+    });
   }
 }
 window.openZbgisMap = openZbgisMap;
 
 function lvLinksHtml(lv, ku, kuName, vypisLabel = 'Výpis') {
-  const target = `pzf-vypis-${ku}-${lv}`;
+  const target = vypisWindowName(ku, lv);
   const place = kuName || ku || '';
   return `<span class="lv-row-actions">
     <a class="btn-lv-link" target="${target}" rel="noopener noreferrer"
        href="${katasterVypisUrl(lv, ku)}"
+       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
        title="Výpis z LV ${fmt(lv)} (${esc(place)})">${vypisLabel}</a>
     <button type="button" class="btn-zbgis-link"
       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
       title="ZBGIS mapa — parcela LV ${esc(lv)} v k.ú. ${esc(place)}">ZBGIS mapa</button>
+    <button type="button" class="btn-parcel-help" title="Ako nájsť parcelu na Katastri a v MAPKE">Ako nájsť parcelu</button>
   </span>`;
 }
 
@@ -819,7 +921,8 @@ function ensureVypisModal() {
         </div>
         <div class="vypis-head-actions">
           <button type="button" class="btn btn-ghost" id="vypis-zbgis">ZBGIS mapa ↗</button>
-          <a class="btn btn-ghost" id="vypis-ext" href="#" target="_blank" rel="noopener noreferrer">Otvoriť na Katastri ↗</a>
+          <button type="button" class="btn btn-ghost" id="vypis-help">Ako nájsť parcelu</button>
+          <a class="btn btn-ghost" id="vypis-ext" href="#" rel="noopener noreferrer">Otvoriť na Katastri ↗</a>
           <button type="button" class="vypis-close" id="vypis-close" aria-label="Zavrieť">×</button>
         </div>
       </div>
@@ -827,8 +930,9 @@ function ensureVypisModal() {
         <div class="vypis-loading" id="vypis-loading">Načítavam výpis…</div>
         <iframe class="vypis-frame" id="vypis-frame" title="Výpis z listu vlastníctva" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" hidden></iframe>
         <div class="vypis-fallback" id="vypis-fallback" hidden>
-          <p>Výpis sa otvára na portáli Katastra. Do tejto stránky ho vložiť nevieme — Kataster posiela X-Frame-Options: deny, blokuje CORS a pred dokumentom je reCAPTCHA.</p>
-          <a class="btn" id="vypis-fallback-link" href="#" target="_blank" rel="noopener noreferrer">Otvoriť výpis na Katastri</a>
+          <p>Výpis ide na Kataster (ÚGKK). Tam je „Nie som robot“ — to nie sme my. Zaškrtnite checkbox, výpis sa načíta.</p>
+          <a class="btn" id="vypis-fallback-link" href="#" rel="noopener noreferrer">Otvoriť výpis na Katastri</a>
+          <button type="button" class="btn btn-ghost" id="vypis-fallback-help">Ako nájsť parcelu</button>
         </div>
       </div>
     </div>`;
@@ -840,6 +944,28 @@ function ensureVypisModal() {
   el.querySelector('#vypis-zbgis').addEventListener('click', () => {
     const btn = el.querySelector('#vypis-zbgis');
     openZbgisMap({
+      lv: btn?.dataset.lv,
+      ku: btn?.dataset.ku,
+      kuName: btn?.dataset.kuname || '',
+    });
+  });
+  el.querySelector('#vypis-fallback-help').addEventListener('click', openParcelHelp);
+  el.querySelector('#vypis-help').addEventListener('click', openParcelHelp);
+  el.querySelector('#vypis-fallback-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    const href = el.querySelector('#vypis-fallback-link')?.href;
+    const btn = el.querySelector('#vypis-zbgis');
+    openOfficialVypis({
+      lv: btn?.dataset.lv,
+      ku: btn?.dataset.ku,
+      kuName: btn?.dataset.kuname || '',
+      url: href,
+    });
+  });
+  el.querySelector('#vypis-ext').addEventListener('click', (e) => {
+    e.preventDefault();
+    const btn = el.querySelector('#vypis-zbgis');
+    openOfficialVypis({
       lv: btn?.dataset.lv,
       ku: btn?.dataset.ku,
       kuName: btn?.dataset.kuname || '',
@@ -861,14 +987,24 @@ function closeVypisModal() {
   }
 }
 
+function openOfficialVypis({ lv, ku, kuName = '', url } = {}) {
+  copyKuLvToClipboard(kuName, ku, lv);
+  showCaptchaToast();
+  const name = vypisWindowName(ku, lv);
+  const href = url || (ku && lv
+    ? katasterVypisUrl(lv, ku)
+    : 'https://kataster.skgeodesy.sk/eskn-portal/search/lv');
+  openNamedWindow(href, name);
+}
+
 async function openVypisModal({ lv, ku, kuName = '' } = {}) {
   if (!lv || !ku) {
-    openNewTab('https://kataster.skgeodesy.sk/eskn-portal/search/lv');
+    openOfficialVypis({ lv, ku, kuName });
     return;
   }
   const url = katasterVypisUrl(lv, ku);
   if (!shouldTryInPageVypis()) {
-    openNewTab(url);
+    openOfficialVypis({ lv, ku, kuName, url });
     return;
   }
   const modal = ensureVypisModal();
@@ -879,8 +1015,11 @@ async function openVypisModal({ lv, ku, kuName = '' } = {}) {
   const ext = document.getElementById('vypis-ext');
   const fallbackLink = document.getElementById('vypis-fallback-link');
   const zbgisBtn = document.getElementById('vypis-zbgis');
+  const winName = vypisWindowName(ku, lv);
   ext.href = url;
+  ext.target = winName;
   fallbackLink.href = url;
+  fallbackLink.target = winName;
   if (zbgisBtn) {
     zbgisBtn.dataset.lv = String(lv);
     zbgisBtn.dataset.ku = String(ku);
@@ -903,7 +1042,9 @@ async function openVypisModal({ lv, ku, kuName = '' } = {}) {
     return;
   }
   loading.hidden = true;
-  const opened = window.open(url, `pzf-vypis-${ku}-${lv}`);
+  copyKuLvToClipboard(kuName, ku, lv);
+  showCaptchaToast();
+  const opened = window.open(url, winName);
   if (opened) {
     closeVypisModal();
     return;
@@ -914,10 +1055,6 @@ async function openVypisModal({ lv, ku, kuName = '' } = {}) {
 function openKatasterLV(kuName, kuCislo, lv) {
   if (!lv) return;
   const kuText = kuName ? kuName.trim() : '';
-  const info = `${kuText}${kuCislo ? ` (k.ú. ${kuCislo})` : ''}, LV ${lv}`;
-  try {
-    navigator.clipboard.writeText(info);
-  } catch (_) {}
   const cleanCislo = kuCislo ? String(kuCislo).trim() : '';
   track('kataster', {
     name: ovSearch?.pickName || '',
@@ -925,18 +1062,28 @@ function openKatasterLV(kuName, kuCislo, lv) {
     ku_code: cleanCislo,
     lv,
   });
-  if (cleanCislo) openVypisModal({ lv, ku: cleanCislo, kuName: kuText });
-  else openNewTab('https://kataster.skgeodesy.sk/eskn-portal/search/lv');
+  openVypisModal({ lv, ku: cleanCislo, kuName: kuText });
 }
 window.openKatasterLV = openKatasterLV;
 window.closeVypisModal = closeVypisModal;
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.getElementById('vypis-modal') && !document.getElementById('vypis-modal').hidden) {
+  if (e.key !== 'Escape') return;
+  const help = document.getElementById('parcel-help-modal');
+  if (help && !help.hidden) {
+    closeParcelHelp();
+    return;
+  }
+  if (document.getElementById('vypis-modal') && !document.getElementById('vypis-modal').hidden) {
     closeVypisModal();
   }
 });
 document.addEventListener('click', (e) => {
+  if (e.target.closest?.('button.btn-parcel-help, button.lv-portal-help-btn')) {
+    e.preventDefault();
+    openParcelHelp();
+    return;
+  }
   const z = e.target.closest?.('button.btn-zbgis-link');
   if (z) {
     e.preventDefault();
@@ -952,12 +1099,11 @@ document.addEventListener('click', (e) => {
   let url;
   try { url = new URL(a.href, location.href); } catch (_) { return; }
   if (!url.hostname.includes('skgeodesy.sk')) return;
-  const lv = url.searchParams.get('prfNumber');
-  const ku = url.searchParams.get('cadastralUnitCode');
-  if (!lv || !ku) return;
-  if (!shouldTryInPageVypis()) return;
+  const lv = a.dataset.lv || url.searchParams.get('prfNumber');
+  const ku = a.dataset.ku || url.searchParams.get('cadastralUnitCode');
+  if (!lv) return;
   e.preventDefault();
-  openVypisModal({ lv, ku, kuName: a.title || '' });
+  openVypisModal({ lv, ku, kuName: a.dataset.kuname || '' });
 });
 
 // ── Universal Focus Preservation ───────────────────────────────────────────
@@ -2442,6 +2588,7 @@ function renderDossier(data) {
           ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
       </div>
+      ${lvPortalHintHtml()}
       <h3 class="dossier-section">Solo LV — jediný neznámy vlastník</h3>
       <p class="insight-note">Na liste nie je iný neznámy z registra. Podiel 1.0 = celý neznámy nárok na tom LV.</p>
       <div class="table-wrap solo-lv-table">${lvRowsHtml(solo)}</div>
@@ -2589,7 +2736,8 @@ async function loadSoloLvs(page = 1) {
           PZF CSV nemá m². Výmeru berieme z Katastra cez Playwright (jednorazová captcha v okne).
           Filter k.ú. je povinný — bez neho je 491 500 listov. Príkaz:
           <code id="solo-fetch-cmd">${esc(fetchCmd)}</code>
-        </p>` : '';
+        </p>
+        ${lvPortalHintHtml()}` : '';
     }
     if (!data.rows.length) {
       wrap.innerHTML = `<div class="empty-state">Žiadne solo LV${soloState.ku ? ` pre k.ú. „${esc(soloState.ku)}“` : ''}.</div>`;
@@ -2792,10 +2940,14 @@ function openAllLvs(lvs) {
     ku: ovSearch.pickKu,
     count: lvs.length,
   });
-  showToast(`🚀 Otváram ${lvs.length} unikátnych výpisov z Katastra...`, 'success');
+  showToast(
+    `Otváram ${lvs.length} výpisov na Katastri. Na každom zaškrtnite „Nie som robot“ (ÚGKK, nie my).`,
+    'info',
+    { ms: 10000, actionLabel: 'Ako nájsť parcelu', onAction: openParcelHelp },
+  );
   lvs.forEach((item, i) => {
     setTimeout(() => {
-      window.open(katasterVypisUrl(item.lv, item.ku), `pzf-vypis-${item.ku}-${item.lv}`);
+      window.open(katasterVypisUrl(item.lv, item.ku), vypisWindowName(item.ku, item.lv));
     }, i * 150);
   });
 }

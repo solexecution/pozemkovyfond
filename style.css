@@ -1119,10 +1119,117 @@ body.vypis-open { overflow: hidden; }
   transform: translateY(100px);
   opacity: 0;
   transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
-  z-index: 999;
-  max-width: 320px;
+  z-index: 1200;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  line-height: 1.4;
+  pointer-events: none;
 }
-#toast.show { transform: translateY(0); opacity: 1; }
+#toast.show {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.toast-action {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-accent, #93c5fd);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.toast-action:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.btn-parcel-help,
+.lv-portal-help-btn {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 4px 9px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-parcel-help:hover,
+.lv-portal-help-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.lv-portal-hint {
+  margin: 0.65rem 0 0.85rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.lv-portal-hint .lv-portal-help-btn {
+  margin-left: 0.35rem;
+  vertical-align: middle;
+}
+
+body.parcel-help-open { overflow: hidden; }
+#parcel-help-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+#parcel-help-modal[hidden] { display: none; }
+.parcel-help-dialog {
+  width: min(34rem, 100%);
+  max-height: min(90vh, 40rem);
+  overflow: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+.parcel-help-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.parcel-help-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.parcel-help-body {
+  padding: 0.9rem 1.1rem 1.15rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.parcel-help-body p { margin: 0 0 0.75rem; color: var(--text-primary); }
+.parcel-help-body ol {
+  margin: 0 0 1rem;
+  padding-left: 1.2rem;
+}
+.parcel-help-body li { margin: 0.45rem 0; }
+.parcel-help-body strong { color: var(--text-primary); }
 
 /* ── Animations ── */
 @keyframes fadeInUp {
@@ -1251,6 +1358,10 @@ html[data-theme="light"] .btn-lv-link {
 html[data-theme="light"] .btn-zbgis-link {
   color: #047857;
   background: rgba(16, 185, 129, 0.12);
+}
+html[data-theme="light"] .btn-parcel-help,
+html[data-theme="light"] .lv-portal-help-btn {
+  color: #334155;
 }
 
 .map-search-dropdown {
