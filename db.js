@@ -915,6 +915,25 @@ async function soloLvs(q) {
   return { total: cntRow[0].cnt, page, limit, rows, parcels };
 }
 
+async function lvParcels(q) {
+  const lv = parseInt(q.lv, 10);
+  const ku = parseInt(q.ku, 10);
+  if (!Number.isFinite(lv) || !Number.isFinite(ku) || lv <= 0 || ku <= 0) {
+    return { parcels: [] };
+  }
+  try {
+    const parcels = await queryObjects(`
+      SELECT lv, cislo_ku, register_type, parcel_no, vymera_m2, druh_pozemku
+      FROM lv_parcels
+      WHERE lv = ${lv} AND cislo_ku = ${ku}
+      ORDER BY CASE WHEN register_type = 'C' THEN 0 ELSE 1 END, vymera_m2 DESC NULLS LAST, parcel_no
+    `);
+    return { parcels };
+  } catch (_) {
+    return { parcels: [] };
+  }
+}
+
 async function owners(q) {
   const page = Math.max(1, parseInt(q.page, 10) || 1);
   const limit = Math.min(parseInt(q.limit, 10) || 50, 200);
@@ -1372,6 +1391,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'solo-lvs':
       result = await soloLvs(q);
+      break;
+    case 'lv-parcels':
+      result = await lvParcels(q);
       break;
     case 'owners':
       result = await owners(q);

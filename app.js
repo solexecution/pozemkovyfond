@@ -296,8 +296,12 @@ function openNewTab(url) {
 }
 
 const ZBGIS_ZOOM_KU = 18;
+const ZBGIS_ZOOM_PARCEL = 19;
+const ESKN_REST = 'https://kataster.skgeodesy.sk/eskn/rest/services/VRM';
 let _kuCentroidIndex = null;
 let _kuCentroidPromise = null;
+const _zbgisParcelCache = new Map();
+const _esknUnitCache = new Map();
 
 function zbgisMapkaUrl(lat, lng, zoom = ZBGIS_ZOOM_KU) {
   return `https://zbgis.skgeodesy.sk/mapka/sk/kataster/identification/point?pos=${lat},${lng},${zoom}`;
@@ -305,6 +309,22 @@ function zbgisMapkaUrl(lat, lng, zoom = ZBGIS_ZOOM_KU) {
 
 function zbgisWindowName(ku, lv) {
   return `pzf-zbgis-${ku || 'ku'}-${lv || 'lv'}`;
+}
+
+function featureBbox(feature) {
+  try {
+    if (typeof L !== 'undefined') {
+      const b = L.geoJSON(feature).getBounds();
+      if (b?.isValid?.() || (b && Number.isFinite(b.getWest?.()))) {
+        const west = b.getWest();
+        const south = b.getSouth();
+        const east = b.getEast();
+        const north = b.getNorth();
+        if ([west, south, east, north].every(Number.isFinite)) return [west, south, east, north];
+      }
+    }
+  } catch (_) {}
+  return bboxFromRings(feature?.geometry?.coordinates);
 }
 
 function featureCentroid(feature) {
@@ -322,13 +342,15 @@ function featureCentroid(feature) {
       if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) return { lat: c.lat, lng: c.lng };
     }
   } catch (_) {}
-  return null;
+  const box = featureBbox(feature);
+  if (!box) return null;
+  return { lng: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2 };
 }
 
-function addCentroidEntry(idx, name, district, lat, lng) {
+function addCentroidEntry(idx, name, district, lat, lng, bbox = null) {
   if (!name || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
   const key = fold(name);
-  const rec = { name, district: district || '', lat, lng };
+  const rec = { name, district: district || '', lat, lng, bbox: bbox || null };
   const list = idx.get(key);
   if (list) list.push(rec);
   else idx.set(key, [rec]);
@@ -348,7 +370,7 @@ async function loadKuCentroidIndex() {
     }
     (geo?.features || []).forEach((f) => {
       const c = featureCentroid(f);
-      if (c) addCentroidEntry(idx, f.properties?.name, f.properties?.district, c.lat, c.lng);
+      if (c) addCentroidEntry(idx, f.properties?.name, f.properties?.district, c.lat, c.lng, featureBbox(f));
     });
     if (typeof SLOVAK_COORDINATES !== 'undefined') {
       Object.entries(SLOVAK_COORDINATES).forEach(([name, coords]) => {
@@ -400,17 +422,262 @@ function matchKuCentroid(idx, kuName, districtHint) {
   return bestScore <= 8 ? best : null;
 }
 
-async function resolveZbgisLocation({ kuName = '', district = '' } = {}) {
+function padBbox(lng, lat, d = 0.03) {
+  return [lng - d, lat - d, lng + d, lat + d];
+}
+
+function bboxFromRings(rings) {
+  const pts = [];
+  const walk = (node) => {
+    if (!Array.isArray(node)) return;
+    if (node.length >= 2 && typeof node[0] === 'number' && typeof node[1] === 'number') {
+      pts.push([Number(node[0]), Number(node[1])]);
+      return;
+    }
+    node.forEach(walk);
+  };
+  walk(rings);
+  if (!pts.length) return null;
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  for (const [lng, lat] of pts) {
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
+  return [minLng, minLat, maxLng, maxLat];
+}
+
+function centroidFromBbox(bbox) {
+  if (!bbox || bbox.length < 4) return null;
+  const lng = (Number(bbox[0]) + Number(bbox[2])) / 2;
+  const lat = (Number(bbox[1]) + Number(bbox[3])) / 2;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function esriJsonp(url, timeoutMs = 18000) {
+  return new Promise((resolve, reject) => {
+    const cb = `pzfEsri_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    let script;
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('timeout'));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      try { delete window[cb]; } catch (_) { window[cb] = undefined; }
+      if (script) script.remove();
+    };
+    window[cb] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+    const u = new URL(url);
+    u.searchParams.set('callback', cb);
+    if (!u.searchParams.get('f')) u.searchParams.set('f', 'json');
+    script = document.createElement('script');
+    script.src = u.toString();
+    script.async = true;
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('jsonp failed'));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+async function esriQuery(url) {
+  try {
+    const res = await fetch(url, { mode: 'cors' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && !data.error) return data;
+    }
+  } catch (_) {}
+  return esriJsonp(url);
+}
+
+function normalizeParcelNo(raw) {
+  return String(raw || '').trim().replace(/\s+/g, '');
+}
+
+function pickDefaultParcel(parcels) {
+  const list = (parcels || []).filter((p) => normalizeParcelNo(p.parcel_no));
+  if (!list.length) return null;
+  const cReg = list.filter((p) => String(p.register_type || '').toUpperCase() === 'C');
+  const pool = cReg.length ? cReg : list;
+  return pool.slice().sort((a, b) => (Number(b.vymera_m2) || 0) - (Number(a.vymera_m2) || 0))[0];
+}
+
+async function loadLvParcels(lv, ku) {
+  try {
+    const data = await apiFetch(`/lv-parcels?lv=${encodeURIComponent(lv)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
+    return Array.isArray(data?.parcels) ? data.parcels : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function lookupMapkaKuExtent(ku) {
+  const code = String(ku || '').trim();
+  if (!code) return null;
+  try {
+    const res = await fetch(`https://zbgis.skgeodesy.sk/mapka/api/detail/sk/ease/${encodeURIComponent(code)}`, { mode: 'cors' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const ext = data?.extent?.coordinates;
+    if (!Array.isArray(ext) || ext.length < 2) return null;
+    const lngs = [Number(ext[0][0]), Number(ext[1][0])];
+    const lats = [Number(ext[0][1]), Number(ext[1][1])];
+    const bbox = [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)];
+    if (!bbox.every(Number.isFinite)) return null;
+    return { bbox, name: data.text || '', municipalityCode: data.municipalityCode || '' };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function lookupEsknCadastralUnit({ lat, lng, ku, kuName = '' }) {
+  const code = String(ku || '').trim();
+  if (code && _esknUnitCache.has(code)) return _esknUnitCache.get(code);
+  const params = new URLSearchParams({
+    geometry: `${lng},${lat}`,
+    geometryType: 'esriGeometryPoint',
+    inSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    returnGeometry: 'true',
+    outSR: '4326',
+    outFields: 'ID,CADASTRAL_UNIT_CODE,CADASTRAL_UNIT_NAME',
+    distance: '400',
+    units: 'esriSRUnit_Meter',
+    f: 'json',
+  });
+  const url = `${ESKN_REST}/identify/MapServer/8/query?${params.toString()}`;
+  let data;
+  try {
+    data = await esriQuery(url);
+  } catch (_) {
+    return null;
+  }
+  const feats = data?.features || [];
+  if (!feats.length) return null;
+  const wantCode = Number(code);
+  const wantName = fold(kuName);
+  let feat = feats.find((f) => Number(f.attributes?.CADASTRAL_UNIT_CODE) === wantCode);
+  if (!feat && wantName) {
+    feat = feats.find((f) => {
+      const n = fold(f.attributes?.CADASTRAL_UNIT_NAME);
+      return n && (n === wantName || n.includes(wantName) || wantName.includes(n));
+    });
+  }
+  if (!feat) feat = feats[0];
+  const bbox = bboxFromRings(feat.geometry?.rings);
+  const rec = {
+    id: Number(feat.attributes?.ID) || null,
+    code: Number(feat.attributes?.CADASTRAL_UNIT_CODE) || null,
+    name: feat.attributes?.CADASTRAL_UNIT_NAME || '',
+    bbox,
+  };
+  if (rec.code) _esknUnitCache.set(String(rec.code), rec);
+  if (code && code !== String(rec.code)) _esknUnitCache.set(code, rec);
+  return rec;
+}
+
+async function geocodeLvParcel(parcel, bbox, cadastralUnitId) {
+  const no = normalizeParcelNo(parcel?.parcel_no);
+  if (!no || !bbox) return null;
+  const reg = String(parcel.register_type || 'C').toUpperCase() === 'E' ? 'e' : 'c';
+  const layers = reg === 'e' ? ['e', 'c'] : ['c', 'e'];
+  for (const layer of layers) {
+    const params = new URLSearchParams({
+      text: no,
+      geometry: bbox.join(','),
+      geometryType: 'esriGeometryEnvelope',
+      inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects',
+      returnGeometry: 'true',
+      outSR: '4326',
+      outFields: 'PARCEL_NUMBER,FOLIO_ID,CADASTRAL_UNIT_ID,DESCRIPTIVE_AREA_OF_PARCEL',
+      resultRecordCount: '200',
+      f: 'json',
+    });
+    const url = `${ESKN_REST}/parcels_${layer}_view/MapServer/0/query?${params.toString()}`;
+    let data;
+    try {
+      data = await esriQuery(url);
+    } catch (_) {
+      continue;
+    }
+    const feats = (data?.features || []).filter((f) => normalizeParcelNo(f.attributes?.PARCEL_NUMBER) === no);
+    const unitId = Number(cadastralUnitId);
+    const scoped = Number.isFinite(unitId) && unitId > 0
+      ? feats.filter((f) => Number(f.attributes?.CADASTRAL_UNIT_ID) === unitId)
+      : feats;
+    const hit = (scoped.length ? scoped : feats)[0];
+    if (!hit) continue;
+    const box = bboxFromRings(hit.geometry?.rings);
+    const c = centroidFromBbox(box);
+    if (c) return { ...c, register: layer.toUpperCase(), parcelNo: no };
+  }
+  return null;
+}
+
+async function resolveZbgisLocation({ lv, ku, kuName = '', district = '' } = {}) {
   const idx = await loadKuCentroidIndex();
   const hit = matchKuCentroid(idx, kuName, district);
-  if (!hit) return null;
-  return {
+  const kuFallback = hit ? {
     lat: hit.lat,
     lng: hit.lng,
     source: 'ku-centroid',
     label: hit.name,
     url: zbgisMapkaUrl(hit.lat, hit.lng, ZBGIS_ZOOM_KU),
+    bbox: hit.bbox || padBbox(hit.lng, hit.lat, 0.03),
+  } : null;
+
+  const cacheKey = `${ku || ''}:${lv || ''}`;
+  if (lv && ku && _zbgisParcelCache.has(cacheKey)) {
+    return _zbgisParcelCache.get(cacheKey);
+  }
+
+  const parcels = (lv && ku) ? await loadLvParcels(lv, ku) : [];
+  if (!parcels.length) return kuFallback;
+
+  const mapkaKu = ku ? await lookupMapkaKuExtent(ku) : null;
+  const unit = kuFallback
+    ? await lookupEsknCadastralUnit({
+      lat: kuFallback.lat,
+      lng: kuFallback.lng,
+      ku,
+      kuName: kuName || kuFallback.label,
+    })
+    : null;
+  const bbox = unit?.bbox || mapkaKu?.bbox || kuFallback?.bbox;
+  if (!bbox) return kuFallback;
+
+  const chosen = pickDefaultParcel(parcels);
+  const geom = await geocodeLvParcel(chosen, bbox, unit?.id);
+  if (!geom) {
+    return kuFallback ? { ...kuFallback, parcelAttempted: true, parcelCount: parcels.length } : null;
+  }
+
+  const loc = {
+    lat: geom.lat,
+    lng: geom.lng,
+    source: 'parcel',
+    label: kuName || unit?.name || kuFallback?.label || String(ku || ''),
+    url: zbgisMapkaUrl(geom.lat, geom.lng, ZBGIS_ZOOM_PARCEL),
+    parcel: chosen,
+    parcelCount: parcels.length,
+    register: chosen.register_type,
   };
+  if (lv && ku) _zbgisParcelCache.set(cacheKey, loc);
+  return loc;
 }
 
 function openNamedWindow(url, name) {
@@ -424,20 +691,52 @@ function openNamedWindow(url, name) {
   return null;
 }
 
+function writePendingZbgis(win, msg) {
+  if (!win || win.closed) return;
+  try {
+    win.document.open();
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>ZBGIS</title>
+      <style>body{font:15px/1.45 system-ui,sans-serif;padding:2rem;color:#1e293b;background:#f8fafc}</style>
+      </head><body>${msg}</body></html>`);
+    win.document.close();
+  } catch (_) {}
+}
+
 async function openZbgisMap({ lv, ku, kuName = '', district = '' } = {}) {
   const name = zbgisWindowName(ku, lv);
   const pending = window.open('about:blank', name);
-  const loc = await resolveZbgisLocation({ kuName, district });
+  writePendingZbgis(pending, 'Hľadám parcelu LV na mape katastra…');
+  let loc = null;
+  try {
+    loc = await resolveZbgisLocation({ lv, ku, kuName, district });
+  } catch (_) {
+    loc = null;
+  }
   if (!loc) {
     if (pending) pending.close();
     showToast('Neviem nájsť polohu k.ú. na ZBGIS mape.', 'error');
     return;
   }
-  track('zbgis', { ku: kuName, ku_code: String(ku || ''), lv, source: loc.source });
+  track('zbgis', {
+    ku: kuName,
+    ku_code: String(ku || ''),
+    lv,
+    source: loc.source,
+    parcel: loc.parcel?.parcel_no || '',
+  });
   if (pending) pending.location.href = loc.url;
   else openNamedWindow(loc.url, name);
-  if (loc.source === 'ku-centroid') {
-    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (presné súradnice parcely nie sú v databáze)`, 'info');
+  if (loc.source === 'parcel') {
+    const p = loc.parcel;
+    const more = loc.parcelCount > 1
+      ? ` (najväčšia z ${loc.parcelCount} parciel LV)`
+      : '';
+    showToast(`ZBGIS mapa: parcela ${p.register_type} ${p.parcel_no}${more}`, 'success');
+  } else if (loc.source === 'ku-centroid') {
+    const why = loc.parcelAttempted
+      ? 'geometriu parcely sa nepodarilo načítať'
+      : 'parcely tohto LV nie sú v databáze';
+    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (${why})`, 'info');
   }
 }
 window.openZbgisMap = openZbgisMap;
@@ -451,7 +750,7 @@ function lvLinksHtml(lv, ku, kuName, vypisLabel = 'Výpis') {
        title="Výpis z LV ${fmt(lv)} (${esc(place)})">${vypisLabel}</a>
     <button type="button" class="btn-zbgis-link"
       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
-      title="ZBGIS mapa — kataster pri k.ú. ${esc(place)}">ZBGIS mapa</button>
+      title="ZBGIS mapa — parcela LV ${esc(lv)} v k.ú. ${esc(place)}">ZBGIS mapa</button>
   </span>`;
 }
 
