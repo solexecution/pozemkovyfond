@@ -10,6 +10,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import * as cheerio from 'cheerio';
 import { parseLvText } from './lv_parser.js';
+import { isLvVypisHtml } from './lv-html.js';
 import cors from 'cors';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { chromium } from 'playwright';
@@ -194,15 +195,15 @@ app.get('/api/lv-preview', async (req, res) => {
       html = await response.text();
     } catch (_) {}
 
-    // Fallback to Playwright Headless Chrome if fetch returned captcha/loader
-    if (!html || html.length < 500 || !html.includes('LIST U VLASTNÍCTVA')) {
+    if (!isLvVypisHtml(html)) {
       const pwRes = await fetchKatasterLvHtml(lv, ku);
-      if (pwRes.html && pwRes.html.length > 500) {
-        html = pwRes.html;
-      }
+      if (isLvVypisHtml(pwRes.html)) html = pwRes.html;
     }
 
-    // Inject custom CSS styling for high readability inside preview drawer
+    if (!isLvVypisHtml(html)) {
+      return res.status(502).send('');
+    }
+
     const customStyle = `
       <style>
         body { font-family: Inter, system-ui, sans-serif !important; padding: 15px !important; color: #1e293b !important; background: #fff !important; }

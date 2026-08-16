@@ -5,6 +5,7 @@
  */
 
 import { initDb, apiRequest } from './db.js';
+import { isLvVypisHtml } from './lv-html.js';
 
 async function apiFetch(path, options = {}) {
   const data = await apiRequest(path, options);
@@ -302,6 +303,48 @@ function sanitizeLvHtml(html) {
   return cleaned;
 }
 
+function vypisProxyUrls(lv, ku) {
+  const q = `lv=${encodeURIComponent(lv)}&ku=${encodeURIComponent(ku)}`;
+  const urls = [];
+  const custom = String(window.PZF_LV_PROXY || '').trim().replace(/\/$/, '');
+  if (custom) urls.push(custom.includes('?') ? `${custom}&${q}` : `${custom}?${q}`);
+  const host = location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1') {
+    urls.push(`${location.origin}/api/lv-preview?${q}`);
+  }
+  return urls;
+}
+
+function shouldTryInPageVypis() {
+  return vypisProxyUrls('1', '1').length > 0;
+}
+
+async function fetchHtml(url, timeoutMs = 25000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, headers: { Accept: 'text/html' } });
+    if (!r.ok) return '';
+    return await r.text();
+  } catch (_) {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function loadVypisHtml(lv, ku) {
+  for (const url of vypisProxyUrls(lv, ku)) {
+    const html = await fetchHtml(url);
+    if (isLvVypisHtml(html)) return html;
+  }
+  try {
+    const html = await apiFetch(`/lv-preview?lv=${encodeURIComponent(lv)}&ku=${encodeURIComponent(ku)}`).then((r) => r.text());
+    if (isLvVypisHtml(html)) return html;
+  } catch (_) {}
+  return '';
+}
+
 function ensureVypisModal() {
   let el = document.getElementById('vypis-modal');
   if (el) return el;
@@ -322,9 +365,9 @@ function ensureVypisModal() {
       </div>
       <div class="vypis-body">
         <div class="vypis-loading" id="vypis-loading">Načítavam výpis…</div>
-        <iframe class="vypis-frame" id="vypis-frame" title="Výpis z listu vlastníctva" hidden></iframe>
+        <iframe class="vypis-frame" id="vypis-frame" title="Výpis z listu vlastníctva" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" hidden></iframe>
         <div class="vypis-fallback" id="vypis-fallback" hidden>
-          <p>Kataster nepovoľuje vložiť výpis priamo do stránky. Otvorí sa v tomto okne, keď to pôjde — zatiaľ ho môžete otvoriť na portáli.</p>
+          <p>Výpis sa otvára na portáli Katastra. Do tejto stránky ho vložiť nevieme — Kataster posiela X-Frame-Options: deny, blokuje CORS a pred dokumentom je reCAPTCHA.</p>
           <a class="btn" id="vypis-fallback-link" href="#" target="_blank" rel="noopener noreferrer">Otvoriť výpis na Katastri</a>
         </div>
       </div>
@@ -356,6 +399,10 @@ async function openVypisModal({ lv, ku, kuName = '' } = {}) {
     return;
   }
   const url = katasterVypisUrl(lv, ku);
+  if (!shouldTryInPageVypis()) {
+    openNewTab(url);
+    return;
+  }
   const modal = ensureVypisModal();
   modal.hidden = false;
   document.body.classList.add('vypis-open');
@@ -374,17 +421,19 @@ async function openVypisModal({ lv, ku, kuName = '' } = {}) {
   frame.removeAttribute('srcdoc');
   frame.removeAttribute('src');
 
-  let html = '';
-  try {
-    html = await apiFetch(`/lv-preview?lv=${encodeURIComponent(lv)}&ku=${encodeURIComponent(ku)}`).then((r) => r.text());
-  } catch (_) {}
-  if (html && html.includes('LIST U VLASTNÍCTVA')) {
+  const html = await loadVypisHtml(lv, ku);
+  if (isLvVypisHtml(html)) {
     frame.srcdoc = sanitizeLvHtml(html);
     frame.hidden = false;
     loading.hidden = true;
     return;
   }
   loading.hidden = true;
+  const opened = window.open(url, `pzf-vypis-${ku}-${lv}`);
+  if (opened) {
+    closeVypisModal();
+    return;
+  }
   fallback.hidden = false;
 }
 
@@ -422,6 +471,7 @@ document.addEventListener('click', (e) => {
   const lv = url.searchParams.get('prfNumber');
   const ku = url.searchParams.get('cadastralUnitCode');
   if (!lv || !ku) return;
+  if (!shouldTryInPageVypis()) return;
   e.preventDefault();
   openVypisModal({ lv, ku, kuName: a.title || '' });
 });

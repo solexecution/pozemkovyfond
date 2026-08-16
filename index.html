@@ -23,6 +23,9 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     window.PZF_UMAMI_WEBSITE_ID = '3f350104-b87f-4647-b5cd-6a870702a2a3';
+    // Optional same-origin-capable proxy that returns Kataster výpis HTML.
+    // GitHub Pages has none. Local: `npm run start:api` (Express /api/lv-preview).
+    window.PZF_LV_PROXY = '';
   </script>
   <script>
     (function loadUmami() {

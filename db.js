@@ -3,6 +3,7 @@
  */
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
 import { parseLvText } from './lv_parser.js';
+import { isLvVypisHtml } from './lv-html.js';
 
 const DATA_CACHE = 'pzf-data-v6';
 const DATA_FP_KEY = 'pzf-data-fp';
@@ -1257,12 +1258,11 @@ async function lvPreview(q) {
   try {
     const response = await fetch(targetUrl);
     const html = await response.text();
-    if (html && html.length > 500 && html.includes('LIST U VLASTNÍCTVA')) return html;
+    if (isLvVypisHtml(html)) return html;
   } catch (_) {
-    /* CORS on GitHub Pages — fall through */
+    /* CORS + reCAPTCHA on GitHub Pages — fall through */
   }
-  return `<h3>Náhľad LV nie je dostupný z prehliadača (CORS).</h3>
-    <p><a href="${targetUrl}" target="_blank" rel="noopener">Otvoriť výpis v novom okne</a></p>`;
+  return '';
 }
 
 async function geoStats() {

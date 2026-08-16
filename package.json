@@ -9,6 +9,7 @@
     "build-data": "node export-parquet.js",
     "start": "npx --yes serve -l 3000 .",
     "dev": "npx --yes serve -l 3000 .",
+    "start:api": "node server.js",
     "fetch-solo": "node fetch-solo-lvs.mjs"
   },
   "dependencies": {

@@ -16,6 +16,16 @@ npm start
 
 Otvor [http://localhost:3000](http://localhost:3000). Prvé načítanie stiahne `data/unknown_owners.parquet` (~51 MB).
 
+In-page náhľad výpisu z LV (modal) potrebuje backend proxy:
+
+```bash
+npm run start:api   # Express + /api/lv-preview (Playwright, ak jednoduchý fetch vráti reCAPTCHA)
+```
+
+Na GitHub Pages proxy nie je — klik na výpis otvorí Kataster v novom tabe. Prehliadač ich HTML čítať nevie (`X-Frame-Options: deny`, CORS, reCAPTCHA).
+
+Voliteľne nastavte `window.PZF_LV_PROXY` v `index.html` na URL, ktorá vráti HTML výpisu (musí to byť už dokument, nie captcha stránka).
+
 ## Dáta
 
 | Súbor | Obsah |
