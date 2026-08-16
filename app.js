@@ -101,6 +101,10 @@ function fold(s) {
     .toLowerCase();
 }
 
+function foldKuKey(s) {
+  return fold(s).replace(/[^a-z0-9]+/g, '');
+}
+
 function tokensOf(s) {
   return fold(s).split(/[^a-z0-9]+/).filter((t) => t.length >= 1);
 }
@@ -1494,7 +1498,7 @@ function wizardBackToNames() {
   ovSearch.holdPlaces = false;
   writeSearchUrl(ovSearch.q, '', '');
   setWizardStep('names');
-  applyMapSearchFilter();
+  applyMapSearchFilter({ fit: true, force: true });
 }
 function wizardBackToPlaces() {
   if (!ovSearch.pickName) {
@@ -1933,6 +1937,7 @@ function pickNameSuggest(name) {
   beginSearch(name);
   ovSearch.placeQ = place;
   ovSearch.fKu = place;
+  ovSearch.lastName = name;
   showTab('overview');
   setOverviewSearching(true, `Hľadám ${name}…`);
   loadOverviewSearch(1);
@@ -2341,10 +2346,12 @@ async function loadOverviewSearch(page = 1) {
       await onPickName(ovSearch.names[0].meno_vlastnika);
     } else {
       setWizardStep('names');
+      const hint = resolvePickedName(ovSearch.lastName);
+      if (hint) prefetchDistrictsForMap(hint);
     }
 
     setOverviewSearching(false, label?.textContent || '');
-    applyMapSearchFilter();
+    applyMapSearchFilter({ fit: true });
     const topNames = ovSearch.names.slice(0, 8).map((r) => r.meno_vlastnika).join(' | ');
     const topPlaces = (data.places || []).slice(0, 8).map((r) => r.katastralne_uzemie).join(' | ');
     trackSearchSettled({
@@ -2396,23 +2403,42 @@ async function onPickName(name) {
   await loadKuOptions(name);
 }
 
+function districtsForPlace(rows) {
+  const loc = (ovSearch.fKu || ovSearch.placeQ || '').trim();
+  if (loc.length < 2) return rows || [];
+  const filtered = (rows || []).filter((r) => matchesFolded(r.katastralne_uzemie, loc));
+  return filtered.length ? filtered : (rows || []);
+}
+
+let _districtsFetchSeq = 0;
+
+async function prefetchDistrictsForMap(name) {
+  if (!name) return;
+  const seq = ++_districtsFetchSeq;
+  try {
+    const data = await apiFetch(`/name-districts?names=${namesParam(name)}`).then((r) => r.json());
+    if (seq !== _districtsFetchSeq) return;
+    if (ovSearch.pickName && nameKey(ovSearch.pickName) !== nameKey(name)) return;
+    ovSearch.districts = districtsForPlace(data.rows || []);
+    applyMapSearchFilter({ fit: true });
+  } catch (_) { /* keep top_ku fallback */ }
+}
+
 async function loadKuOptions(name, preferKu) {
   setWizardStep('places');
   const wrap = document.getElementById('overview-ku-wrap');
   if (wrap) wrap.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div>Hľadám obce pre ${esc(name)}…</div>`;
+  const seq = ++_districtsFetchSeq;
   try {
     const data = await apiFetch(`/name-districts?names=${namesParam(name)}`).then((r) => r.json());
-    let rows = data.rows || [];
+    if (seq !== _districtsFetchSeq) return;
     const loc = ovSearch.fKu || ovSearch.placeQ;
-    if (loc && loc.trim().length >= 2) {
-      const filtered = rows.filter((r) => matchesFolded(r.katastralne_uzemie, loc));
-      if (filtered.length) rows = filtered;
-    }
+    const rows = districtsForPlace(data.rows || []);
     ovSearch.districts = rows;
     renderPlaceCards(rows);
-    applyMapSearchFilter();
+    applyMapSearchFilter({ fit: true, force: true });
     const exact = loc
-      ? rows.find((r) => fold(r.katastralne_uzemie) === fold(loc))
+      ? rows.find((r) => foldKuKey(r.katastralne_uzemie) === foldKuKey(loc))
       : null;
     const pick = preferKu && rows.some((r) => r.katastralne_uzemie === preferKu)
       ? preferKu
@@ -2442,7 +2468,7 @@ async function onPickKuFromList(ku) {
 async function onPickKu(ku) {
   ovSearch.pickKu = ku || '';
   writeSearchUrl(ovSearch.q, ovSearch.pickName, ku || '');
-  applyMapSearchFilter();
+  applyMapSearchFilter({ fit: true, force: true });
   if (!ku || !ovSearch.pickName) {
     setWizardStep(ovSearch.pickName ? 'places' : 'names');
     return;
@@ -4158,33 +4184,55 @@ async function initSlovakiaMap() {
     }
   }
 
-  // Load official GeoJSON boundaries
-  loadGeoJsonBoundaries();
+  if (!window._geoBoundariesData) loadGeoJsonBoundaries();
+  else applyMapSearchFilter({ fit: true, force: true });
 }
 window.initSlovakiaMap = initSlovakiaMap;
 
 let geoJsonLayer = null;
 let _mapFilterKey = '';
 
+function kusMatchingPlace(place, candidates) {
+  const p = (place || '').trim();
+  if (p.length < 2) return [];
+  const key = foldKuKey(p);
+  const exact = candidates.filter((n) => foldKuKey(n) === key);
+  if (exact.length) return [...new Set(exact)];
+  return [...new Set(candidates.filter((n) => matchesFolded(n, p)))];
+}
+
 function mapFilterKus() {
   if (ovSearch.pickKu) return [ovSearch.pickKu];
-  if (ovSearch.fKu) return [ovSearch.fKu];
-  if (ovSearch.pickName && ovSearch.districts?.length) {
-    return ovSearch.districts.map((r) => r.katastralne_uzemie).filter(Boolean);
-  }
-  const out = [];
+
+  const districts = (ovSearch.districts || []).map((r) => r.katastralne_uzemie).filter(Boolean);
+  const named = ovSearch.pickName || ovSearch.lastName;
+  if (named && districts.length) return [...new Set(districts)];
+
+  const place = (ovSearch.fKu || ovSearch.placeQ || '').trim();
   const fromPlaces = (ovSearch.places || []).map((r) => r.katastralne_uzemie).filter(Boolean);
-  const placeHit = fromPlaces.some((p) => matchesFolded(p, ovSearch.q));
-  if (placeHit) return [...new Set(fromPlaces)];
-  fromPlaces.forEach((p) => out.push(p));
-  (ovSearch.names || []).forEach((r) => {
-    if (r.top_ku) out.push(r.top_ku);
-  });
-  return [...new Set(out)];
+  const fromNames = (ovSearch.names || []).map((r) => r.top_ku).filter(Boolean);
+  const fromGeo = (window._geoBoundariesData?.features || [])
+    .map((f) => f.properties?.name)
+    .filter(Boolean);
+
+  if (place.length >= 2) {
+    const pool = [...new Set([...districts, ...fromPlaces, ...fromGeo])];
+    const matched = kusMatchingPlace(place, pool);
+    if (matched.length) return matched;
+  }
+
+  if ((ovSearch.q || '').trim().length >= 2 && fromNames.length) {
+    return [...new Set(fromNames)];
+  }
+  if (fromPlaces.length) return [...new Set(fromPlaces)];
+  return [];
 }
 
 function mapFilterActive() {
-  return (ovSearch.q || '').trim().length >= 2 && mapFilterKus().length > 0;
+  const qOk = (ovSearch.q || '').trim().length >= 2;
+  const placeOk = (ovSearch.fKu || ovSearch.placeQ || '').trim().length >= 2;
+  const named = !!(ovSearch.pickName || ovSearch.lastName || ovSearch.pickKu);
+  return (qOk || placeOk || named) && mapFilterKus().length > 0;
 }
 
 function kuLayerStyle(feature, { match = false, active = false } = {}) {
@@ -4235,27 +4283,27 @@ function applyMapTheme(theme) {
 
 function mapChipItems(kus) {
   const byName = new Map();
-  (geoStatsData?.topKu || []).forEach((r) => byName.set(fold(r.katastralne_uzemie), r));
+  (geoStatsData?.topKu || []).forEach((r) => byName.set(foldKuKey(r.katastralne_uzemie), r));
   (ovSearch.districts || []).forEach((r) => {
-    const k = fold(r.katastralne_uzemie);
+    const k = foldKuKey(r.katastralne_uzemie);
     if (!byName.has(k)) {
       byName.set(k, { katastralne_uzemie: r.katastralne_uzemie, record_count: r.lvs || r.recs || 0 });
     }
   });
   (ovSearch.places || []).forEach((r) => {
-    const k = fold(r.katastralne_uzemie);
+    const k = foldKuKey(r.katastralne_uzemie);
     if (!byName.has(k)) {
       byName.set(k, { katastralne_uzemie: r.katastralne_uzemie, record_count: r.recs || r.lvs || 0 });
     }
   });
   (window._geoBoundariesData?.features || []).forEach((f) => {
-    const k = fold(f.properties.name);
+    const k = foldKuKey(f.properties.name);
     if (!byName.has(k)) {
       byName.set(k, { katastralne_uzemie: f.properties.name, record_count: f.properties.record_count || 0 });
     }
   });
   return kus.map((name) => {
-    const hit = byName.get(fold(name));
+    const hit = byName.get(foldKuKey(name));
     return hit ? { ...hit, katastralne_uzemie: name } : { katastralne_uzemie: name, record_count: 0 };
   });
 }
@@ -4267,7 +4315,7 @@ function updateMapFilterBanner() {
   const kus = mapFilterKus();
   if (sub) {
     if (active) {
-      const who = ovSearch.pickKu || ovSearch.fKu || ovSearch.pickName || ovSearch.q;
+      const who = ovSearch.pickKu || ovSearch.pickName || ovSearch.lastName || ovSearch.fKu || ovSearch.q;
       sub.textContent = `Filtrované podľa hľadania: ${who} · ${kus.length} k.ú.`;
     } else {
       sub.textContent = 'Kliknite na okres alebo katastrálne územie na mape pre okamžité filtrovanie celej databázy neznámych vlastníkov';
@@ -4287,15 +4335,15 @@ function applyMapSearchFilter(opts = {}) {
   if (!skMap || !geoJsonLayer) return;
 
   const kus = mapFilterKus();
-  const active = (ovSearch.q || '').trim().length >= 2 && kus.length > 0;
-  const folded = new Set(kus.map(fold));
+  const active = mapFilterActive();
+  const folded = new Set(kus.map(foldKuKey));
   const key = active ? [...folded].sort().join('|') : '';
   const changed = force || key !== _mapFilterKey;
   _mapFilterKey = key;
 
   geoJsonLayer.eachLayer((layer) => {
     const name = layer.feature?.properties?.name || '';
-    const match = active && folded.has(fold(name));
+    const match = active && folded.has(foldKuKey(name));
     layer.setStyle(kuLayerStyle(layer.feature, { match, active }));
   });
 
@@ -4310,13 +4358,21 @@ function applyMapSearchFilter(opts = {}) {
     const bounds = [];
     geoJsonLayer.eachLayer((layer) => {
       const name = layer.feature?.properties?.name || '';
-      if (!folded.has(fold(name)) || !layer.getBounds) return;
+      if (!folded.has(foldKuKey(name)) || !layer.getBounds) return;
       try { bounds.push(layer.getBounds()); } catch (_) { /* ignore */ }
     });
+    if (!bounds.length) {
+      kus.forEach((name) => {
+        const coords = SLOVAK_COORDINATES[name];
+        if (coords && typeof L !== 'undefined') {
+          bounds.push(L.latLngBounds([coords, coords]));
+        }
+      });
+    }
     if (bounds.length) {
       const group = bounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(bounds[0]));
       if (group.isValid()) {
-        const maxZoom = kus.length <= 1 ? 13 : kus.length <= 8 ? 11 : 9;
+        const maxZoom = kus.length <= 1 ? 13 : 12;
         skMap.fitBounds(group, { padding: [40, 40], maxZoom });
       }
     }
@@ -4403,7 +4459,7 @@ function renderGeoPills() {
   mapMarkersGroup.clearLayers();
 
   const kus = mapFilterKus();
-  const folded = mapFilterActive() ? new Set(kus.map(fold)) : null;
+  const folded = mapFilterActive() ? new Set(kus.map(foldKuKey)) : null;
   const zoom = skMap ? skMap.getZoom() : 8;
   const threshold = folded ? 0 : zoom >= 11 ? 100 : zoom >= 10 ? 500 : zoom >= 9 ? 1500 : 3000;
   const maxMarkers = folded ? 400 : zoom >= 12 ? 400 : zoom >= 11 ? 300 : zoom >= 10 ? 200 : 150;
@@ -4413,7 +4469,7 @@ function renderGeoPills() {
   const visible = window._geoBoundariesData.features
     .filter(f => {
       const name = f.properties.name || '';
-      if (folded && !folded.has(fold(name))) return false;
+      if (folded && !folded.has(foldKuKey(name))) return false;
       const cnt = f.properties.record_count || 0;
       if (cnt < threshold) return false;
       const fBounds = L.geoJSON(f).getBounds();
@@ -4568,10 +4624,10 @@ function onMapSearchInput(query) {
   }
 
   // Search across GeoJSON features — match name and district
-  const filterSet = mapFilterActive() ? new Set(mapFilterKus().map(fold)) : null;
+  const filterSet = mapFilterActive() ? new Set(mapFilterKus().map(foldKuKey)) : null;
   const results = window._geoBoundariesData.features
     .filter(f => {
-      if (filterSet && !filterSet.has(fold(f.properties.name))) return false;
+      if (filterSet && !filterSet.has(foldKuKey(f.properties.name))) return false;
       const name = normStr(f.properties.name);
       const district = normStr(f.properties.district || '');
       return name.includes(q) || district.includes(q);
