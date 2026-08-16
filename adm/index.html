@@ -29,11 +29,28 @@
     (function loadUmami() {
       var id = window.PZF_UMAMI_WEBSITE_ID;
       if (!id || id.length < 8) return;
+      var host = location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') return;
+      try {
+        var q = new URLSearchParams(location.search);
+        if (q.get('umami') === 'off') {
+          localStorage.setItem('umami.disabled', '1');
+          document.cookie = 'umami.disabled=1;path=/;max-age=315360000;secure;samesite=lax';
+          location.replace(new URL('optout.html', document.baseURI).href);
+          return;
+        }
+        if (q.get('umami') === 'on') {
+          localStorage.removeItem('umami.disabled');
+          document.cookie = 'umami.disabled=;path=/;max-age=0';
+        }
+        if (localStorage.getItem('umami.disabled')) return;
+        if (/(?:^|;\s*)umami\.disabled=1/.test(document.cookie)) return;
+      } catch (e) {}
       var s = document.createElement('script');
       s.defer = true;
       s.src = 'https://cloud.umami.is/script.js';
       s.setAttribute('data-website-id', id);
-      s.setAttribute('data-domains', 'solexecution.github.io,localhost');
+      s.setAttribute('data-domains', 'solexecution.github.io');
       document.head.appendChild(s);
     })();
   </script>

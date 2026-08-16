@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PZF Explorer — bez merania</title>
+  <meta name="robots" content="noindex">
+  <script>
+    (function () {
+      try {
+        localStorage.setItem('umami.disabled', '1');
+        document.cookie = 'umami.disabled=1;path=/;max-age=315360000;secure;samesite=lax';
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      font: 16px/1.45 system-ui, sans-serif;
+      background: #0d0f14;
+      color: #e2e8f0;
+      padding: 1.5rem;
+    }
+    main {
+      max-width: 28rem;
+      text-align: center;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 0.75rem; }
+    p { color: #8b95a8; margin: 0 0 1.25rem; }
+    a {
+      color: #60a5fa;
+      text-decoration: none;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Toto zariadenie sa už nepočíta</h1>
+    <p>Umami na tomto prehliadači je vypnuté. Otvorte tento odkaz raz na každom telefóne a PC, ktoré používate.</p>
+    <p><a href="./">Späť na PZF Explorer</a></p>
+  </main>
+</body>
+</html>

@@ -220,7 +220,17 @@ function trackVal(v) {
   return String(v).replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
+function umamiOptedOut() {
+  try {
+    if (localStorage.getItem('umami.disabled')) return true;
+    if (/(?:^|;\s*)umami\.disabled=1/.test(document.cookie)) return true;
+  } catch (_) {}
+  const host = location.hostname;
+  return host === 'localhost' || host === '127.0.0.1';
+}
+
 function track(event, data) {
+  if (umamiOptedOut()) return;
   const payload = {};
   if (data && typeof data === 'object') {
     for (const [k, v] of Object.entries(data)) {
