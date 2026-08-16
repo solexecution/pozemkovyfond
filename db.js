@@ -51,6 +51,68 @@ function hideBoot() {
   }
 }
 
+function showBootProgress() {
+  const consent = document.getElementById('boot-consent');
+  const progress = document.getElementById('boot-progress');
+  if (consent) consent.hidden = true;
+  if (progress) progress.hidden = false;
+}
+
+function isCellularConnection() {
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!c) return null;
+  if (c.saveData) return true;
+  if (c.type === 'cellular') return true;
+  if (c.type === 'wifi' || c.type === 'ethernet') return false;
+  const slow = c.effectiveType === 'slow-2g' || c.effectiveType === '2g' || c.effectiveType === '3g';
+  return slow ? true : null;
+}
+
+async function isRegisterCached() {
+  try {
+    const cache = await openDataCache();
+    if (!cache) return false;
+    const hit = await cache.match(dataUrl('unknown_owners.parquet'));
+    return Boolean(hit);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function waitForFirstDownloadConsent() {
+  if (await isRegisterCached()) {
+    showBootProgress();
+    setStatus('Načítavam z cache…');
+    return;
+  }
+
+  const consent = document.getElementById('boot-consent');
+  const btn = document.getElementById('boot-consent-btn');
+  const warn = document.getElementById('boot-cell-warn');
+  if (!consent || !btn) {
+    showBootProgress();
+    return;
+  }
+
+  consent.hidden = false;
+  const cell = isCellularConnection();
+  if (warn && cell === true) {
+    warn.classList.add('boot-cell-hot');
+    warn.innerHTML = 'Zdá sa, že ste na <strong>mobilných dátach</strong>. Sťahovanie <strong>~60&nbsp;MB</strong> môže byť spoplatnené. Odporúčame Wi‑Fi.';
+    btn.textContent = 'Aj tak stiahnuť (~60 MB)';
+  }
+  setStatus('Čakám na potvrdenie sťahovania…');
+  btn.disabled = false;
+
+  await new Promise((resolve) => {
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      showBootProgress();
+      resolve();
+    }, { once: true });
+  });
+}
+
 async function fetchBuffer(url, onProgress) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Nepodarilo sa stiahnuť ${url} (${res.status})`);
@@ -223,6 +285,8 @@ function prefixPred(col, token) {
 
 export async function initDb() {
   if (ready) return;
+
+  await waitForFirstDownloadConsent();
 
   setStatus('Inicializujem DuckDB WASM...');
   setProgress(2);

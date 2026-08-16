@@ -344,6 +344,7 @@ function showTab(name) {
     initSlovakiaMap();
     setTimeout(() => {
       if (skMap) skMap.invalidateSize();
+      applyMapSearchFilter({ fit: true, force: true });
     }, 150);
   }
 }
@@ -627,6 +628,7 @@ function wizardBackToNames() {
   ovSearch.holdPlaces = false;
   writeSearchUrl(ovSearch.q, '', '');
   setWizardStep('names');
+  applyMapSearchFilter();
 }
 function wizardBackToPlaces() {
   if (!ovSearch.pickName) {
@@ -639,12 +641,14 @@ function wizardBackToPlaces() {
   if (ovSearch.districts?.length) {
     setWizardStep('places');
     renderPlaceCards(ovSearch.districts);
+    applyMapSearchFilter();
   } else {
     loadKuOptions(ovSearch.pickName);
   }
 }
 let _ovTimer = null;
 let ovSearchController = null;
+const SEARCH_DEBOUNCE_MS = 700;
 
 const BANNER_KEY = 'pzf-src-banner-v1';
 
@@ -758,7 +762,8 @@ function submitOverviewSearch(e) {
 }
 
 function onOverviewSearchInput(val) {
-  beginSearch(val, 'overview');
+  syncSearchInputs(val, 'overview');
+  ovSearch.q = val;
   clearTimeout(_ovTimer);
   if (val.trim().length < 2) {
     setOverviewSearching(false);
@@ -766,14 +771,19 @@ function onOverviewSearchInput(val) {
     if (card) card.hidden = true;
     document.body.classList.add('landing-mode');
     document.body.classList.remove('search-mode');
+    applyMapSearchFilter({ fit: true, force: true });
     return;
   }
-  setOverviewSearching(true, 'Hľadám…');
-  _ovTimer = setTimeout(() => loadOverviewSearch(1), 400);
+  _ovTimer = setTimeout(() => {
+    beginSearch(val, 'overview');
+    setOverviewSearching(true, 'Hľadám…');
+    loadOverviewSearch(1);
+  }, SEARCH_DEBOUNCE_MS);
 }
 
 function onHeaderSearchInput(val) {
-  beginSearch(val, 'header');
+  syncSearchInputs(val, 'header');
+  ovSearch.q = val;
   clearTimeout(_ovTimer);
   if (val.trim().length < 2) {
     setOverviewSearching(false);
@@ -783,11 +793,16 @@ function onHeaderSearchInput(val) {
       document.body.classList.add('landing-mode');
       document.body.classList.remove('search-mode');
     }
+    applyMapSearchFilter({ fit: true, force: true });
     return;
   }
-  showTab('overview');
-  setOverviewSearching(true, 'Hľadám…');
-  _ovTimer = setTimeout(() => loadOverviewSearch(1), 400);
+  _ovTimer = setTimeout(() => {
+    beginSearch(val, 'header');
+    const onMap = document.getElementById('tab-map')?.classList.contains('active');
+    if (!onMap) showTab('overview');
+    setOverviewSearching(true, 'Hľadám…');
+    loadOverviewSearch(1);
+  }, SEARCH_DEBOUNCE_MS);
 }
 
 function onOverviewSearchKeydown(e) {
@@ -819,6 +834,7 @@ function clearOverviewSearch() {
   if (card) card.hidden = true;
   hideDossier();
   showTab('overview');
+  applyMapSearchFilter({ fit: true, force: true });
   document.getElementById('overview-search')?.focus();
 }
 
@@ -1065,6 +1081,7 @@ async function loadOverviewSearch(page = 1) {
     card.hidden = true;
     writeSearchUrl('');
     setOverviewSearching(false);
+    applyMapSearchFilter({ fit: true, force: true });
     return;
   }
 
@@ -1117,6 +1134,7 @@ async function loadOverviewSearch(page = 1) {
     }
 
     setOverviewSearching(false, label?.textContent || '');
+    applyMapSearchFilter();
     const topNames = ovSearch.names.slice(0, 8).map((r) => r.meno_vlastnika).join(' | ');
     const topPlaces = (data.places || []).slice(0, 8).map((r) => r.katastralne_uzemie).join(' | ');
     trackSearchSettled({
@@ -1172,6 +1190,7 @@ async function loadKuOptions(name, preferKu) {
     const rows = data.rows || [];
     ovSearch.districts = rows;
     renderPlaceCards(rows);
+    applyMapSearchFilter();
     const pick = preferKu && rows.some((r) => r.katastralne_uzemie === preferKu)
       ? preferKu
       : '';
@@ -1198,6 +1217,7 @@ async function onPickKuFromList(ku) {
 async function onPickKu(ku) {
   ovSearch.pickKu = ku || '';
   writeSearchUrl(ovSearch.q, ovSearch.pickName, ku || '');
+  applyMapSearchFilter();
   if (!ku || !ovSearch.pickName) {
     setWizardStep(ovSearch.pickName ? 'places' : 'names');
     return;
@@ -2892,7 +2912,9 @@ async function initSlovakiaMap() {
 
     // Re-render markers on zoom change for optimal badge density
     skMap.on('zoomend', () => {
-      if (geoStatsData && geoStatsData.topKu) {
+      if (geoJsonLayer && window._geoBoundariesData) {
+        renderGeoPills();
+      } else if (geoStatsData && geoStatsData.topKu) {
         renderMapMarkers(geoStatsData.topKu);
       }
     });
@@ -2922,6 +2944,175 @@ async function initSlovakiaMap() {
 window.initSlovakiaMap = initSlovakiaMap;
 
 let geoJsonLayer = null;
+let _mapFilterKey = '';
+
+function mapFilterKus() {
+  if (ovSearch.pickKu) return [ovSearch.pickKu];
+  if (ovSearch.fKu) return [ovSearch.fKu];
+  if (ovSearch.pickName && ovSearch.districts?.length) {
+    return ovSearch.districts.map((r) => r.katastralne_uzemie).filter(Boolean);
+  }
+  const out = [];
+  const fromPlaces = (ovSearch.places || []).map((r) => r.katastralne_uzemie).filter(Boolean);
+  const placeHit = fromPlaces.some((p) => matchesFolded(p, ovSearch.q));
+  if (placeHit) return [...new Set(fromPlaces)];
+  fromPlaces.forEach((p) => out.push(p));
+  (ovSearch.names || []).forEach((r) => {
+    if (r.top_ku) out.push(r.top_ku);
+  });
+  return [...new Set(out)];
+}
+
+function mapFilterActive() {
+  return (ovSearch.q || '').trim().length >= 2 && mapFilterKus().length > 0;
+}
+
+function kuLayerStyle(feature, { match = false, active = false } = {}) {
+  const cnt = feature?.properties?.record_count || 0;
+  if (!active) {
+    return {
+      color: cnt > 0 ? '#60a5fa' : '#334155',
+      weight: cnt > 0 ? 1.5 : 0.6,
+      opacity: cnt > 0 ? 0.9 : 0.3,
+      fillColor: cnt > 0 ? '#1d4ed8' : '#0f172a',
+      fillOpacity: cnt > 0 ? Math.min(0.5, 0.08 + (cnt / 50000) * 0.4) : 0.04,
+    };
+  }
+  if (match) {
+    return {
+      color: '#34d399',
+      weight: 2.2,
+      opacity: 0.95,
+      fillColor: '#059669',
+      fillOpacity: cnt > 0 ? Math.min(0.55, 0.22 + (cnt / 50000) * 0.35) : 0.18,
+    };
+  }
+  return {
+    color: '#334155',
+    weight: 0.5,
+    opacity: 0.15,
+    fillColor: '#0f172a',
+    fillOpacity: 0.03,
+  };
+}
+
+function mapChipItems(kus) {
+  const byName = new Map();
+  (geoStatsData?.topKu || []).forEach((r) => byName.set(fold(r.katastralne_uzemie), r));
+  (ovSearch.districts || []).forEach((r) => {
+    const k = fold(r.katastralne_uzemie);
+    if (!byName.has(k)) {
+      byName.set(k, { katastralne_uzemie: r.katastralne_uzemie, record_count: r.lvs || r.recs || 0 });
+    }
+  });
+  (ovSearch.places || []).forEach((r) => {
+    const k = fold(r.katastralne_uzemie);
+    if (!byName.has(k)) {
+      byName.set(k, { katastralne_uzemie: r.katastralne_uzemie, record_count: r.recs || r.lvs || 0 });
+    }
+  });
+  (window._geoBoundariesData?.features || []).forEach((f) => {
+    const k = fold(f.properties.name);
+    if (!byName.has(k)) {
+      byName.set(k, { katastralne_uzemie: f.properties.name, record_count: f.properties.record_count || 0 });
+    }
+  });
+  return kus.map((name) => {
+    const hit = byName.get(fold(name));
+    return hit ? { ...hit, katastralne_uzemie: name } : { katastralne_uzemie: name, record_count: 0 };
+  });
+}
+
+function updateMapFilterBanner() {
+  const sub = document.getElementById('map-subtitle');
+  const title = document.getElementById('map-chips-title');
+  const active = mapFilterActive();
+  const kus = mapFilterKus();
+  if (sub) {
+    if (active) {
+      const who = ovSearch.pickKu || ovSearch.fKu || ovSearch.pickName || ovSearch.q;
+      sub.textContent = `Filtrované podľa hľadania: ${who} · ${kus.length} k.ú.`;
+    } else {
+      sub.textContent = 'Kliknite na okres alebo katastrálne územie na mape pre okamžité filtrovanie celej databázy neznámych vlastníkov';
+    }
+  }
+  if (title) {
+    title.textContent = active
+      ? `📍 Katastrálne územia podľa hľadania (${kus.length})`
+      : '📍 Najvýznamnejšie Katastrálne Územia & Hot-spoty PZF';
+  }
+  document.getElementById('tab-map')?.classList.toggle('map-filtered', active);
+}
+
+function applyMapSearchFilter(opts = {}) {
+  const { fit = true, force = false } = opts;
+  updateMapFilterBanner();
+  if (!skMap || !geoJsonLayer) return;
+
+  const kus = mapFilterKus();
+  const active = (ovSearch.q || '').trim().length >= 2 && kus.length > 0;
+  const folded = new Set(kus.map(fold));
+  const key = active ? [...folded].sort().join('|') : '';
+  const changed = force || key !== _mapFilterKey;
+  _mapFilterKey = key;
+
+  geoJsonLayer.eachLayer((layer) => {
+    const name = layer.feature?.properties?.name || '';
+    const match = active && folded.has(fold(name));
+    layer.setStyle(kuLayerStyle(layer.feature, { match, active }));
+  });
+
+  if (active) renderMapChips(mapChipItems(kus));
+  else if (geoStatsData?.topKu) renderMapChips(geoStatsData.topKu);
+
+  renderGeoPills();
+
+  if (!fit || !changed) return;
+
+  if (active) {
+    const bounds = [];
+    geoJsonLayer.eachLayer((layer) => {
+      const name = layer.feature?.properties?.name || '';
+      if (!folded.has(fold(name)) || !layer.getBounds) return;
+      try { bounds.push(layer.getBounds()); } catch (_) { /* ignore */ }
+    });
+    if (bounds.length) {
+      const group = bounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(bounds[0]));
+      if (group.isValid()) {
+        const maxZoom = kus.length <= 1 ? 13 : kus.length <= 8 ? 11 : 9;
+        skMap.fitBounds(group, { padding: [40, 40], maxZoom });
+      }
+    }
+  } else if (geoJsonLayer.getBounds().isValid()) {
+    skMap.fitBounds(geoJsonLayer.getBounds(), { padding: [15, 15] });
+  }
+}
+
+function onMapKuClick(kuName) {
+  if ((ovSearch.q || '').trim().length >= 2) {
+    if (ovSearch.pickName) onPickKu(kuName);
+    else {
+      ovSearch.fKu = kuName;
+      ovSearch.pickName = '';
+      ovSearch.pickKu = '';
+      ovSearch.holdNames = false;
+      track('place_chip', { q: ovSearch.q, ku: kuName });
+      loadOverviewSearch(1);
+    }
+    showTab('overview');
+    return;
+  }
+  if (isAdm()) {
+    filterByMapLocation(kuName, 'owners');
+    return;
+  }
+  const inp = document.getElementById('overview-search');
+  if (inp) inp.value = kuName;
+  beginSearch(kuName);
+  showTab('overview');
+  loadOverviewSearch(1);
+}
+
 async function loadGeoJsonBoundaries() {
   if (!skMap) return;
   try {
@@ -2938,27 +3129,19 @@ async function loadGeoJsonBoundaries() {
       filter: (feature) => {
         return feature.geometry && (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon');
       },
-      style: (feature) => {
-        const cnt = feature.properties.record_count || 0;
-        return {
-          color: cnt > 0 ? '#60a5fa' : '#334155',
-          weight: cnt > 0 ? 1.5 : 0.6,
-          opacity: cnt > 0 ? 0.9 : 0.3,
-          fillColor: cnt > 0 ? '#1d4ed8' : '#0f172a',
-          fillOpacity: cnt > 0 ? Math.min(0.5, 0.08 + (cnt / 50000) * 0.4) : 0.04
-        };
-      },
+      style: (feature) => kuLayerStyle(feature, { active: false }),
       onEachFeature: (feature, layer) => {
         const name = feature.properties.name;
         const district = feature.properties.district;
         const cnt = feature.properties.record_count || 0;
+        const safeName = jsAttr(name);
 
         const popupContent = `
           <div style="font-family:Inter,sans-serif;padding:4px">
             <div style="font-size:1rem;font-weight:700;color:#0f172a">📍 ${esc(name)}</div>
             <div style="font-size:0.8rem;color:#475569;margin-bottom:6px">Okres: <strong>${esc(district || 'N/A')}</strong></div>
             ${cnt > 0 ? `<div style="background:#eff6ff;color:#1e40af;padding:3px 8px;border-radius:6px;font-weight:600;font-size:0.8rem;margin-bottom:8px">👥 ${fmt(cnt)} neznámych vlastníkov</div>` : '<div style="color:#94a3b8;font-size:0.75rem;margin-bottom:6px">Žiadne záznamy PZF</div>'}
-            ${cnt > 0 ? `<button class="btn" style="padding:4px 8px;font-size:0.75rem;width:100%" onclick="window.filterByMapLocation('${esc(name).replace(/'/g, "\\'")}', 'owners')">👥 Filtrovať Neznámych Vlastníkov</button>` : ''}
+            <button class="btn" style="padding:4px 8px;font-size:0.75rem;width:100%" onclick="window.onMapKuClick('${safeName}')">📍 Otvoriť k.ú.</button>
           </div>`;
 
         layer.bindPopup(popupContent);
@@ -2969,31 +3152,31 @@ async function loadGeoJsonBoundaries() {
     window.geoJsonLayer = geoJsonLayer;
     window._geoBoundariesData = geoData;
 
-    renderGeoPills();
-    skMap.off('zoomend', renderGeoPills);
-    skMap.on('zoomend', renderGeoPills);
-
-    if (geoJsonLayer.getBounds().isValid()) {
-      skMap.fitBounds(geoJsonLayer.getBounds(), { padding: [15, 15] });
-    }
+    applyMapSearchFilter({ fit: true, force: true });
   } catch (e) {
     console.error('Failed to load GeoJSON boundaries:', e);
   }
 }
 window.loadGeoJsonBoundaries = loadGeoJsonBoundaries;
+window.applyMapSearchFilter = applyMapSearchFilter;
+window.onMapKuClick = onMapKuClick;
 
 function renderGeoPills() {
   if (!mapMarkersGroup || !window._geoBoundariesData) return;
   mapMarkersGroup.clearLayers();
 
+  const kus = mapFilterKus();
+  const folded = mapFilterActive() ? new Set(kus.map(fold)) : null;
   const zoom = skMap ? skMap.getZoom() : 8;
-  const threshold = zoom >= 11 ? 100 : zoom >= 10 ? 500 : zoom >= 9 ? 1500 : 3000;
-  const maxMarkers = zoom >= 12 ? 400 : zoom >= 11 ? 300 : zoom >= 10 ? 200 : 150;
+  const threshold = folded ? 0 : zoom >= 11 ? 100 : zoom >= 10 ? 500 : zoom >= 9 ? 1500 : 3000;
+  const maxMarkers = folded ? 400 : zoom >= 12 ? 400 : zoom >= 11 ? 300 : zoom >= 10 ? 200 : 150;
 
   const viewport = skMap.getBounds();
 
   const visible = window._geoBoundariesData.features
     .filter(f => {
+      const name = f.properties.name || '';
+      if (folded && !folded.has(fold(name))) return false;
       const cnt = f.properties.record_count || 0;
       if (cnt < threshold) return false;
       const fBounds = L.geoJSON(f).getBounds();
@@ -3008,11 +3191,11 @@ function renderGeoPills() {
       const center = bounds.getCenter();
       const name = feature.properties.name;
       const cnt = feature.properties.record_count;
-      const safeName = esc(name).replace(/'/g, "\\'");
+      const safeName = jsAttr(name);
       const marker = L.marker(center, {
         icon: L.divIcon({
           className: 'custom-map-marker',
-          html: `<div class="map-num-pill" onclick="window.filterByMapLocation('${safeName}', 'owners')" title="${esc(name)}: ${fmt(cnt)} neznámych">${fmt(cnt)}</div>`,
+          html: `<div class="map-num-pill" onclick="window.onMapKuClick('${safeName}')" title="${esc(name)}: ${fmt(cnt)} neznámych">${fmt(cnt)}</div>`,
           iconSize: [null, null],
           iconAnchor: [18, 10]
         })
@@ -3039,13 +3222,13 @@ function renderMapMarkers(kuList) {
     const coords = SLOVAK_COORDINATES[name] || getDeterministicCoords(name);
 
     if (coords) {
-      const safeName = esc(name).replace(/'/g, "\\'");
+      const safeName = jsAttr(name);
       
       // Clean numeric count pill marker (NO names, ONLY count!)
       const badgeIcon = L.divIcon({
         className: 'custom-map-marker',
         html: `
-          <div class="map-num-pill" onclick="window.filterByMapLocation('${safeName}', 'owners')" title="${esc(name)}: ${fmt(item.record_count)} neznámych">
+          <div class="map-num-pill" onclick="window.onMapKuClick('${safeName}')" title="${esc(name)}: ${fmt(item.record_count)} neznámych">
             ${fmt(item.record_count)}
           </div>`,
         iconSize: [null, null],
@@ -3063,7 +3246,7 @@ function renderMapMarkers(kuList) {
             <span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:6px;font-size:0.75rem;font-weight:600">📜 ${fmt(item.lv_count)} LV</span>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <button class="btn" style="padding:4px 8px;font-size:0.75rem" onclick="window.filterByMapLocation('${safeName}', 'owners')">👥 Filtrovať Neznámych Vlastníkov</button>
+            <button class="btn" style="padding:4px 8px;font-size:0.75rem" onclick="window.onMapKuClick('${safeName}')">📍 Otvoriť k.ú.</button>
             <button class="btn btn-ghost" style="padding:4px 8px;font-size:0.75rem" onclick="window.filterByMapLocation('${safeName}', 'transferred')">📋 Zobraziť Prevedené Práva</button>
             <button class="btn btn-ghost" style="padding:4px 8px;font-size:0.75rem" onclick="window.filterByMapLocation('${safeName}', 'lv-analysis')">🌲 Hĺbková Analýza LV</button>
           </div>
@@ -3147,9 +3330,11 @@ function onMapSearchInput(query) {
     return;
   }
 
-  // Search across all GeoJSON features — match name and district
+  // Search across GeoJSON features — match name and district
+  const filterSet = mapFilterActive() ? new Set(mapFilterKus().map(fold)) : null;
   const results = window._geoBoundariesData.features
     .filter(f => {
+      if (filterSet && !filterSet.has(fold(f.properties.name))) return false;
       const name = normStr(f.properties.name);
       const district = normStr(f.properties.district || '');
       return name.includes(q) || district.includes(q);
@@ -3259,20 +3444,29 @@ function searchMapLocation(query) {
 }
 
 function resetMapView() {
-  if (skMap) skMap.setView([48.7, 19.6], 8);
   const select = document.getElementById('map-okres-select');
   if (select) select.value = '';
   const search = document.getElementById('map-search-input');
   if (search) search.value = '';
+  if (mapFilterActive()) {
+    applyMapSearchFilter({ fit: true, force: true });
+    return;
+  }
+  if (skMap && geoJsonLayer && geoJsonLayer.getBounds().isValid()) {
+    skMap.fitBounds(geoJsonLayer.getBounds(), { padding: [15, 15] });
+  } else if (skMap) {
+    skMap.setView([48.7, 19.6], 8);
+  }
 }
 window.resetMapView = resetMapView;
 
 function renderMapChips(kuList) {
   const wrap = document.getElementById('map-chips-wrap');
   if (!wrap || !kuList) return;
+  const limit = mapFilterActive() ? 30 : 15;
 
-  wrap.innerHTML = kuList.slice(0, 15).map(item => `
-    <button class="btn btn-ghost" style="font-size:0.78rem;padding:4px 10px" onclick="filterByMapLocation('${esc(item.katastralne_uzemie)}', 'owners')">
+  wrap.innerHTML = kuList.slice(0, limit).map(item => `
+    <button class="btn btn-ghost" style="font-size:0.78rem;padding:4px 10px" onclick="onMapKuClick('${jsAttr(item.katastralne_uzemie)}')">
       📍 <strong>${esc(item.katastralne_uzemie)}</strong> (${fmt(item.record_count)})
     </button>
   `).join('');
@@ -3320,6 +3514,8 @@ window.showTab = showTab;
 window.runCustomQuery = runCustomQuery;
 window.setSampleQuery = setSampleQuery;
 window.initSlovakiaMap = initSlovakiaMap;
+window.onMapKuClick = onMapKuClick;
+window.applyMapSearchFilter = applyMapSearchFilter;
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function boot() {

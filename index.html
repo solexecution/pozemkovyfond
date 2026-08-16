@@ -30,10 +30,24 @@
 <div id="boot-overlay">
   <div class="boot-card">
     <div class="boot-logo">🏛️ PZF Explorer</div>
-    <p id="boot-msg">Inicializujem DuckDB WASM...</p>
-    <div class="boot-bar"><div id="boot-bar-fill"></div></div>
-    <p id="boot-pct">0 %</p>
-    <p class="boot-hint">Prvé načítanie stiahne register (~63 MB). Ďalšie obnovenia idú z cache v prehliadači.</p>
+    <p id="boot-msg">Pripravujem register…</p>
+
+    <div id="boot-consent">
+      <p class="boot-consent-lead">Prvé načítanie stiahne register <strong>~60&nbsp;MB</strong>.</p>
+      <p class="boot-cell-warn" id="boot-cell-warn">
+        Skontrolujte, že <strong>nie ste na mobilných dátach</strong> — sťahovanie môže byť spoplatnené. Použite Wi‑Fi.
+      </p>
+      <button type="button" class="btn boot-consent-btn" id="boot-consent-btn" disabled>
+        Stiahnuť register (~60&nbsp;MB)
+      </button>
+      <p class="boot-hint">Ďalšie obnovenia idú z cache v prehliadači, bez opakovaného sťahovania.</p>
+    </div>
+
+    <div id="boot-progress" hidden>
+      <div class="boot-bar"><div id="boot-bar-fill"></div></div>
+      <p id="boot-pct">0 %</p>
+      <p class="boot-hint">Sťahujem register. Nezatvárajte túto kartu.</p>
+    </div>
   </div>
 </div>
 
@@ -452,7 +466,7 @@
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:1rem">
         <div>
           <div class="card-title">🗺️ Interaktívna Geografická Mapa Slovenska — Okresy & Katastre</div>
-          <div style="font-size:0.83rem;color:var(--text-secondary)">
+          <div id="map-subtitle" style="font-size:0.83rem;color:var(--text-secondary)">
             Kliknite na okres alebo katastrálne územie na mape pre okamžité filtrovanie celej databázy neznámych vlastníkov
           </div>
         </div>
@@ -477,7 +491,7 @@
       <div id="sk-map" style="height:550px;width:100%;border-radius:12px;border:1px solid var(--border-color);overflow:hidden;margin-bottom:1.5rem;box-shadow:0 10px 25px rgba(0,0,0,0.3)"></div>
 
       <!-- Map Quick Stats & Hotspot Districts Grid -->
-      <div class="card-title" style="font-size:0.9rem;margin-bottom:0.75rem">📍 Najvýznamnejšie Katastrálne Územia & Hot-spoty PZF</div>
+      <div class="card-title" id="map-chips-title" style="font-size:0.9rem;margin-bottom:0.75rem">📍 Najvýznamnejšie Katastrálne Územia & Hot-spoty PZF</div>
       <div id="map-chips-wrap" style="display:flex;gap:0.5rem;flex-wrap:wrap"></div>
     </div>
   </div><!-- /tab-map -->
