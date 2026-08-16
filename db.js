@@ -5,6 +5,7 @@ import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0
 import { parseLvText } from './lv_parser.js';
 
 const DATA_CACHE = 'pzf-data-v6';
+const DATA_FP_KEY = 'pzf-data-fp';
 
 let db = null;
 let conn = null;
@@ -123,26 +124,61 @@ function isReloadNavigation() {
   }
 }
 
+function statsFingerprint(s) {
+  if (!s || typeof s !== 'object') return '';
+  return [
+    s.total_unknown_owners,
+    s.unique_katastralne,
+    s.unique_lv_uo,
+    s.unique_names,
+    s.total_transferred,
+    s.unique_lv_tr,
+    s.overlap_count,
+  ].join('|');
+}
+
+function rememberedDataFingerprint() {
+  try {
+    return localStorage.getItem(DATA_FP_KEY) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function rememberDataFingerprint(s) {
+  const fp = statsFingerprint(s);
+  if (!fp) return;
+  try {
+    localStorage.setItem(DATA_FP_KEY, fp);
+  } catch (_) { /* private mode */ }
+}
+
+function dataStatsUnchanged() {
+  const now = statsFingerprint(cachedStats);
+  const prev = rememberedDataFingerprint();
+  return Boolean(now && prev && now === prev);
+}
+
 async function isCachedResponseStale(url, hit) {
+  if (!hit) return true;
   if (!isReloadNavigation()) return false;
+  // UI-only deploys change GitHub Pages ETag/Last-Modified on every file.
+  // Re-download parquet only when register stats (or byte size) actually changed.
+  if (dataStatsUnchanged()) return false;
+  const prevFp = rememberedDataFingerprint();
+  const nowFp = statsFingerprint(cachedStats);
+  if (prevFp && nowFp && prevFp !== nowFp) return true;
   try {
     const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
     if (!head.ok) return false;
     const remoteLen = head.headers.get('content-length');
+    if (!remoteLen) return false;
     const cachedLen = hit.headers.get('X-Pzf-Size') || hit.headers.get('Content-Length');
-    if (remoteLen && cachedLen && remoteLen !== cachedLen) return true;
-    const remoteEtag = head.headers.get('etag');
-    const cachedEtag = hit.headers.get('ETag');
-    if (remoteEtag && cachedEtag && remoteEtag !== cachedEtag) return true;
-    const remoteLm = head.headers.get('last-modified');
-    const cachedLm = hit.headers.get('Last-Modified');
-    if (remoteLm && cachedLm && remoteLm !== cachedLm) return true;
-    if (remoteLen && !cachedLen) {
-      const size = (await hit.clone().blob()).size;
-      if (String(size) !== remoteLen) return true;
-    }
-  } catch (_) { /* HEAD unsupported — keep cache */ }
-  return false;
+    const size = cachedLen || String((await hit.clone().blob()).size);
+    return remoteLen !== String(size);
+  } catch (_) {
+    return false;
+  }
 }
 
 async function fetchBuffer(url, onProgress, fetchOpts = {}) {
@@ -365,7 +401,7 @@ export async function initDb() {
   setProgress(8);
 
   try {
-    const statsRes = await fetch(dataUrl('stats.json'), isReloadNavigation() ? { cache: 'no-store' } : {});
+    const statsRes = await fetch(dataUrl('stats.json'), { cache: 'no-store' });
     if (statsRes.ok) cachedStats = await statsRes.json();
   } catch (_) {}
 
@@ -504,6 +540,7 @@ export async function initDb() {
   `);
 
   ready = true;
+  rememberDataFingerprint(cachedStats);
   setProgress(100);
   setStatus('DuckDB WASM · pripravené', 'ok');
   hideBoot();
@@ -515,6 +552,7 @@ async function stats() {
     const res = await fetch(dataUrl('stats.json'), isReloadNavigation() ? { cache: 'no-store' } : {});
     if (res.ok) {
       cachedStats = await res.json();
+      rememberDataFingerprint(cachedStats);
       return cachedStats;
     }
   } catch (_) {}

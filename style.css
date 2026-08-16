@@ -1539,6 +1539,23 @@ body.landing-mode #overview-dashboard { display: none !important; }
   border-color: var(--blue);
   background: var(--blue-glow);
 }
+.place-chip.active {
+  padding-right: 0.55rem;
+}
+.place-chip span.place-chip-x {
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-accent);
+}
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+.empty-state .btn {
+  margin-top: 0.25rem;
+}
 
 .dossier-head {
   display: flex;

@@ -666,6 +666,7 @@ const ovSearch = {
   fKu: '',
   placeQ: '',
   pickName: '',
+  lastName: '',
   pickKu: '',
   names: [],
   places: [],
@@ -921,6 +922,7 @@ function beginSearch(q, source) {
   ovSearch.page = 1;
   ovSearch.fName = '';
   ovSearch.pickName = '';
+  ovSearch.lastName = '';
   ovSearch.pickKu = '';
   ovSearch.holdNames = false;
   ovSearch.holdPlaces = false;
@@ -1262,6 +1264,13 @@ function pickPlaceSuggest(ku) {
   syncPlaceInputs(ku);
   hideWhisper();
   track('place_chip', { q: ovSearch.q, ku });
+  const picked = ovSearch.pickName || ovSearch.lastName;
+  if (picked) {
+    ovSearch.pickName = picked;
+    ovSearch.holdPlaces = true;
+    loadKuOptions(picked);
+    return;
+  }
   const q = (document.getElementById('overview-search')?.value || ovSearch.q || '').trim();
   beginSearch(q);
   ovSearch.fKu = ku;
@@ -1278,6 +1287,7 @@ function clearOverviewSearch() {
   ovSearch.fKu = '';
   ovSearch.placeQ = '';
   ovSearch.pickName = '';
+  ovSearch.lastName = '';
   ovSearch.pickKu = '';
   ovSearch.names = [];
   ovSearch.places = [];
@@ -1437,7 +1447,9 @@ function renderOverviewNames() {
   const names = sortedOverviewNames();
   if (!names.length) {
     namesWrap.innerHTML = ovSearch.fKu
-      ? `<div class="empty-state">Žiadne mená v ${esc(ovSearch.fKu)} pre tento výraz. Skúste iné meno, alebo zrušte filter obce.</div>`
+      ? `<div class="empty-state">Žiadne mená v ${esc(ovSearch.fKu)} pre tento výraz.
+           <button type="button" class="btn btn-ghost" onclick="clearPlaceFilter()">Zrušiť filter obce</button>
+         </div>`
       : '<div class="empty-state">Žiadne mená pre tento výraz. Skúste priezvisko, alebo zadajte obec.</div>';
     return;
   }
@@ -1458,7 +1470,7 @@ function renderOverviewNames() {
     const more = variants.length - shown.length;
     const pct = Number(r.top_ku_pct || 0);
     return `
-      <button type="button" class="pick-card" onclick="onPickName('${jsAttr(r.meno_vlastnika)}')">
+      <button type="button" class="pick-card" onclick="onPickNameCard('${jsAttr(r.meno_vlastnika)}')">
         <div class="pick-card-head">
           <strong>${esc(r.meno_vlastnika)}</strong>
           <span class="badge ${ch.cls}">${ch.label}</span>
@@ -1487,21 +1499,55 @@ function renderPlacesStrip(places) {
     return;
   }
   if (strip) strip.hidden = ovSearch.step !== 'names';
-  wrap.innerHTML = ovSearch.places.slice(0, 16).map((r) => `
-    <button type="button" class="place-chip${ovSearch.fKu === r.katastralne_uzemie ? ' active' : ''}"
-            onclick="onPickPlaceChip('${jsAttr(r.katastralne_uzemie)}')">
-      ${esc(r.katastralne_uzemie)}
-    </button>`).join('');
+  wrap.innerHTML = ovSearch.places.slice(0, 16).map((r) => {
+    const active = ovSearch.fKu === r.katastralne_uzemie;
+    return `
+    <button type="button" class="place-chip${active ? ' active' : ''}"
+            onclick="onPickPlaceChip('${jsAttr(r.katastralne_uzemie)}')"
+            title="${active ? 'Zrušiť filter obce' : 'Filtrovať na túto obec'}">
+      ${esc(r.katastralne_uzemie)}${active ? '<span class="place-chip-x" aria-hidden="true">×</span>' : ''}
+    </button>`;
+  }).join('');
+}
+
+function clearPlaceFilter() {
+  ovSearch.fKu = '';
+  ovSearch.placeQ = '';
+  ovSearch.pickKu = '';
+  ovSearch.holdPlaces = true;
+  syncPlaceInputs('');
+  hideWhisper('place');
+  const picked = ovSearch.pickName || ovSearch.lastName;
+  writeSearchUrl(ovSearch.q, picked || '', '');
+  track('place_chip', { q: ovSearch.q, ku: '' });
+  if (picked) {
+    ovSearch.pickName = picked;
+    loadKuOptions(picked);
+    return;
+  }
+  ovSearch.holdNames = false;
+  loadOverviewSearch(1);
 }
 
 function onPickPlaceChip(ku) {
-  ovSearch.fKu = ovSearch.fKu === ku ? '' : ku;
-  ovSearch.placeQ = ovSearch.fKu;
-  syncPlaceInputs(ovSearch.fKu);
-  ovSearch.pickName = '';
+  if (ovSearch.fKu === ku) {
+    clearPlaceFilter();
+    return;
+  }
+  ovSearch.fKu = ku;
+  ovSearch.placeQ = ku;
+  syncPlaceInputs(ku);
   ovSearch.pickKu = '';
+  const picked = ovSearch.pickName || ovSearch.lastName;
+  track('place_chip', { q: ovSearch.q, ku });
+  if (picked) {
+    ovSearch.pickName = picked;
+    ovSearch.holdPlaces = true;
+    loadKuOptions(picked);
+    return;
+  }
+  ovSearch.pickName = '';
   ovSearch.holdNames = false;
-  track('place_chip', { q: ovSearch.q, ku: ovSearch.fKu || ku });
   loadOverviewSearch(1);
 }
 
@@ -1515,7 +1561,11 @@ function renderPlaceCards(rows) {
       : `Ktoré katastrálne územie? (${rows.length})`;
   }
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty-state">Pre toto meno sa nenašlo katastrálne územie.</div>';
+    wrap.innerHTML = ovSearch.fKu
+      ? `<div class="empty-state">Žiadne katastrálne územie v ${esc(ovSearch.fKu)} pre ${esc(ovSearch.pickName || 'toto meno')}.
+           <button type="button" class="btn btn-ghost" onclick="clearPlaceFilter()">Zrušiť filter obce</button>
+         </div>`
+      : '<div class="empty-state">Pre toto meno sa nenašlo katastrálne územie.</div>';
     return;
   }
   wrap.innerHTML = rows.map((r) => `
@@ -1549,14 +1599,10 @@ async function loadOverviewSearch(page = 1) {
     || searchQueryFromUrl()
     || ''
   ).trim();
-  const place = (
-    currentPlaceQuery()
-    || new URLSearchParams(location.search).get('place')
-    || ''
-  ).trim();
+  const place = currentPlaceQuery();
   ovSearch.q = q;
   ovSearch.placeQ = place;
-  if (place) ovSearch.fKu = place;
+  ovSearch.fKu = place;
   ovSearch.page = page;
   const card = document.getElementById('overview-search-card');
   if (!card) return;
@@ -1643,10 +1689,15 @@ function hideDossier() {
   if (d) { d.hidden = true; d.innerHTML = ''; }
 }
 
+function onPickNameCard(name) {
+  ovSearch.holdPlaces = false;
+  return onPickName(name);
+}
+
 async function onPickName(name) {
   ovSearch.pickName = name || '';
+  if (name) ovSearch.lastName = name;
   ovSearch.pickKu = '';
-  ovSearch.holdPlaces = false;
   writeSearchUrl(ovSearch.q, name || '', '');
   if (!name) {
     setWizardStep('names');
@@ -1914,9 +1965,11 @@ window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
 window.showNameDistricts = showNameDistricts;
 window.onPickName = onPickName;
+window.onPickNameCard = onPickNameCard;
 window.onPickKu = onPickKu;
 window.onPickKuFromList = onPickKuFromList;
 window.onPickPlaceChip = onPickPlaceChip;
+window.clearPlaceFilter = clearPlaceFilter;
 window.onPickCoowner = onPickCoowner;
 window.clearPicks = clearPicks;
 window.wizardBackToNames = wizardBackToNames;
@@ -4000,9 +4053,11 @@ window.clearOverviewSearch = clearOverviewSearch;
 window.filterOverviewName = filterOverviewName;
 window.showNameDistricts = showNameDistricts;
 window.onPickName = onPickName;
+window.onPickNameCard = onPickNameCard;
 window.onPickKu = onPickKu;
 window.onPickKuFromList = onPickKuFromList;
 window.onPickPlaceChip = onPickPlaceChip;
+window.clearPlaceFilter = clearPlaceFilter;
 window.onPickCoowner = onPickCoowner;
 window.clearPicks = clearPicks;
 window.wizardBackToNames = wizardBackToNames;
