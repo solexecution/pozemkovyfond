@@ -6,6 +6,7 @@
 
 import { initDb, apiRequest } from './db.js';
 import { isLvVypisHtml } from './lv-html.js';
+import { parseVypisInput, looksLikeVypis, personParcelBreakdown } from './lv_parser.js';
 
 async function apiFetch(path, options = {}) {
   const data = await apiRequest(path, options);
@@ -84,6 +85,12 @@ const PALETTE = [
 function fmt(n) {
   if (n === null || n === undefined) return '—';
   return Number(n).toLocaleString('sk-SK');
+}
+function fmtM2(n) {
+  if (n === null || n === undefined || !Number.isFinite(Number(n))) return '—';
+  const v = Number(n);
+  const rounded = Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : Math.round(v * 10) / 10;
+  return `${fmt(rounded)} m²`;
 }
 function fmtDate(s) { return s || '—'; }
 
@@ -319,15 +326,16 @@ function copyKuLvToClipboard(kuName, ku, lv) {
 
 function showCaptchaToast() {
   showToast(
-    'To „Nie som robot“ je Kataster (ÚGKK), nie my. Zaškrtnite checkbox — výpis sa načíta. k.ú. + LV sú v schránke.',
+    'To „Nie som robot“ je Kataster (ÚGKK), nie my. Po výpise: Ctrl+A, Ctrl+C a v PZF dajte Vložiť výpis.',
     'info',
-    { ms: 10000, actionLabel: 'Ako nájsť parcelu', onAction: openParcelHelp },
+    { ms: 12000, actionLabel: 'Vložiť výpis', onAction: () => openPasteVypisModal({}) },
   );
 }
 
 function lvPortalHintHtml() {
   return `<p class="lv-portal-hint">
-    Výpis ide na Kataster (ÚGKK) — tam je „Nie som robot“. ZBGIS skočí na parcelu, len ak ju máme uloženú.
+    <strong>Výpis</strong> otvorí Kataster (ÚGKK) — „Nie som robot“ nie sme my. Schránku necháme voľnú, aby ste výpis skopírovali.
+    Potom <strong>Vložiť výpis</strong> (Ctrl+V). Uložené parcely sa ukážu samy.
     <button type="button" class="lv-portal-help-btn">Ako nájsť parcelu</button>
   </p>`;
 }
@@ -347,7 +355,7 @@ function ensureParcelHelpModal() {
       <div class="parcel-help-body">
         <p>Nové hľadania často nemajú čísla parciel u nás. ZBGIS preto neskočí na pozemok. Treba to z Katastra.</p>
         <ol>
-          <li><strong>Výpis.</strong> Otvorí sa Kataster (ÚGKK). Zaškrtnite „Nie som robot“ — to nie sme my. Potom sa výpis načíta. k.ú. + LV už sú v schránke.</li>
+          <li><strong>Výpis.</strong> Otvorí sa Kataster (ÚGKK). Zaškrtnite „Nie som robot“ — to nie sme my. Potom sa výpis načíta. k.ú. + LV sú v dosieri (schránku necháme voľnú na skopírovanie výpisu).</li>
           <li><strong>ČASŤ A: MAJETKOVÁ PODSTATA.</strong> Tam sú parcely registra C a E. Zoberte číslo parcely.</li>
           <li><strong>MAPKA</strong> (téma Kataster nehnuteľností). Do poľa <strong>Vyhľadávanie</strong> zadajte obec alebo k.ú. a stlačte <strong>zámok</strong> (hľadať len v tom území). Potom zadajte <strong>číslo parcely</strong> alebo <strong>číslo LV</strong> a kliknite na výsledok.</li>
           <li>Alebo v mape otvorte <strong>Informácie z mapy</strong> a kliknite na pozemok.</li>
@@ -381,6 +389,326 @@ window.openParcelHelp = openParcelHelp;
 
 function katasterVypisUrl(lv, kuCode) {
   return `https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${encodeURIComponent(lv)}&cadastralUnitCode=${encodeURIComponent(kuCode)}&outputType=html`;
+}
+
+const LV_EXTRACT_STORE = 'pzf-lv-extracts-v1';
+const _lvExtracts = new Map();
+let _pasteCtx = {};
+let _lastVypis = {};
+
+function extractKey(ku, lv) {
+  return `${Number(ku) || 0}:${Number(lv) || 0}`;
+}
+
+function loadExtractStore() {
+  try {
+    const raw = localStorage.getItem(LV_EXTRACT_STORE);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (v && (v.parcels || v.owners || v.doc)) _lvExtracts.set(k, v);
+    }
+  } catch (_) {}
+}
+
+function persistExtractStore() {
+  try {
+    const obj = {};
+    let n = 0;
+    for (const [k, v] of _lvExtracts) {
+      obj[k] = v;
+      if (++n >= 80) break;
+    }
+    localStorage.setItem(LV_EXTRACT_STORE, JSON.stringify(obj));
+  } catch (_) {}
+}
+
+function getLvExtract(ku, lv) {
+  return _lvExtracts.get(extractKey(ku, lv)) || null;
+}
+
+function setLvExtract(ku, lv, parsed) {
+  const key = extractKey(parsed?.doc?.cislo_ku || ku, parsed?.doc?.lv || lv);
+  _lvExtracts.set(key, parsed);
+  if (ku && lv && key !== extractKey(ku, lv)) _lvExtracts.set(extractKey(ku, lv), parsed);
+  persistExtractStore();
+}
+
+function rememberExtracts(extracts) {
+  for (const [key, parsed] of Object.entries(extracts || {})) {
+    if (_lvExtracts.has(key)) continue;
+    if (parsed?.parcels?.length || parsed?.owners?.length) _lvExtracts.set(key, parsed);
+  }
+}
+
+async function persistExtractToDb(parsed, ctx = {}) {
+  const lv = parsed?.doc?.lv || ctx.lv;
+  const ku = parsed?.doc?.cislo_ku || ctx.ku;
+  if (!lv || !ku) return;
+  try {
+    await apiFetch('/save-lv-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [{ lv, ku, kuName: ctx.kuName || parsed.doc?.nazov_ku || '', parsed }],
+      }),
+    });
+  } catch (_) {}
+}
+
+async function hydrateExtractsIntoDb() {
+  const items = [];
+  for (const [key, parsed] of _lvExtracts) {
+    const [ku, lv] = key.split(':');
+    items.push({ lv, ku, parsed });
+  }
+  if (!items.length) return;
+  try {
+    await apiFetch('/save-lv-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+  } catch (_) {}
+}
+
+function ingestVypis(raw, ctx = {}) {
+  if (!looksLikeVypis(raw)) {
+    return { ok: false, error: 'Toto nevyzerá ako výpis z LV. Na Katastri dajte Ctrl+A, Ctrl+C a vložte celú stránku.' };
+  }
+  const parsed = parseVypisInput(raw, ctx.lv || 0, ctx.ku || 0);
+  if (!parsed.parcels?.length && !parsed.owners?.length) {
+    return { ok: false, error: 'Výpis sa nepodarilo rozobrať — chýbajú parcely aj vlastníci.' };
+  }
+  const lv = parsed.doc?.lv || ctx.lv;
+  const ku = parsed.doc?.cislo_ku || ctx.ku;
+  setLvExtract(ku, lv, parsed);
+  persistExtractToDb(parsed, { ...ctx, lv, ku });
+  if (!ctx.silent) {
+    copyKuLvToClipboard(ctx.kuName || parsed.doc?.nazov_ku || '', ku, lv);
+  }
+  refreshExtractPanels();
+  return { ok: true, parsed, lv, ku };
+}
+
+function extractPanelInner(lv, ku, searchName) {
+  const parsed = getLvExtract(ku, lv);
+  if (!parsed) {
+    return `<p class="lv-extract-empty">Výmera z katastra zatiaľ nie je. Otvorte <strong>Výpis</strong>, po captcha skopírujte stránku a dajte <strong>Vložiť výpis</strong>.</p>`;
+  }
+  const b = personParcelBreakdown(parsed, searchName || '');
+  const ownerLine = b.onLv
+    ? `Na LV: ${esc(b.matches.map((m) => m.meno_vlastnika).join(' · '))}${b.matches[0]?.datum_narodenia ? ` · ${esc(b.matches[0].datum_narodenia)}` : ''} · podiel <strong>${esc(b.podiel_str)}</strong>`
+    : `Toto meno je v registri nezistených, ale na aktuálnom LV ako vlastník nie je. Nižšie je výmera parciel listu.`;
+  const rows = (b.parcels || []).map((p) => `
+    <tr>
+      <td>${esc(p.parcel_no)}</td>
+      <td>${esc(p.register_type || '—')}</td>
+      <td class="cell-muted">${esc(p.druh_pozemku || '—')}</td>
+      <td>${fmtM2(p.vymera_m2)}</td>
+      <td>${b.onLv ? esc(p.podiel_str || '—') : '—'}</td>
+      <td>${b.onLv ? `<strong>${fmtM2(p.ich_m2)}</strong>` : '—'}</td>
+      <td class="cell-muted">${b.onLv ? `${fmtM2(p.ich_m2)} / ${fmtM2(p.vymera_m2)}` : `— / ${fmtM2(p.vymera_m2)}`}</td>
+    </tr>`).join('');
+  return `
+    <p class="lv-extract-match">${ownerLine}</p>
+    <div class="table-wrap lv-extract-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Parcela</th>
+            <th>Reg.</th>
+            <th>Druh</th>
+            <th>Výmera</th>
+            <th>Podiel</th>
+            <th>Ich m²</th>
+            <th>vs parcela</th>
+          </tr>
+        </thead>
+        <tbody>${rows || `<tr><td colspan="7" class="cell-muted">Bez parciel v ČASTI A</td></tr>`}</tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3"><strong>Spolu LV</strong></td>
+            <td><strong>${fmtM2(b.lvTotal)}</strong></td>
+            <td>${b.onLv ? `<strong>${esc(b.podiel_str)}</strong>` : '—'}</td>
+            <td class="lv-extract-total">${b.onLv ? fmtM2(b.ichTotal) : '—'}</td>
+            <td>${b.onLv ? `${fmtM2(b.ichTotal)} / ${fmtM2(b.lvTotal)}` : `— / ${fmtM2(b.lvTotal)}`}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>`;
+}
+
+function refreshExtractPanels() {
+  document.querySelectorAll('.lv-extract[data-lv]').forEach((el) => {
+    el.innerHTML = extractPanelInner(el.dataset.lv, el.dataset.ku, ovSearch.pickName || '');
+  });
+}
+
+function pasteTargetFromDossier() {
+  if (_lastVypis.lv) {
+    return {
+      lv: _lastVypis.lv,
+      ku: _lastVypis.ku,
+      kuName: _lastVypis.kuName || ovSearch.pickKu || '',
+      name: ovSearch.pickName || '',
+    };
+  }
+  const lvs = window._overviewLvs || [];
+  const first = lvs[0] || {};
+  return {
+    lv: first.lv || '',
+    ku: first.ku || '',
+    kuName: first.kuName || ovSearch.pickKu || '',
+    name: ovSearch.pickName || '',
+  };
+}
+
+function ensurePasteVypisModal() {
+  let el = document.getElementById('paste-vypis-modal');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'paste-vypis-modal';
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="paste-vypis-dialog" role="dialog" aria-modal="true" aria-labelledby="paste-vypis-title">
+      <div class="paste-vypis-head">
+        <div>
+          <h2 id="paste-vypis-title">Vložiť výpis</h2>
+          <p class="paste-vypis-sub" id="paste-vypis-sub"></p>
+        </div>
+        <button type="button" class="vypis-close" id="paste-vypis-close" aria-label="Zavrieť">×</button>
+      </div>
+      <div class="paste-vypis-body">
+        <p class="paste-vypis-hint">Na Katastri (po „Nie som robot“) <strong>Ctrl+A</strong>, <strong>Ctrl+C</strong>, sem <strong>Ctrl+V</strong>. Spracuje sa hneď.</p>
+        <textarea id="paste-vypis-text" rows="7" placeholder="Vložte výpis z LV…"></textarea>
+        <div class="paste-vypis-actions">
+          <button type="button" class="btn" id="paste-vypis-clip">Vložiť zo schránky</button>
+          <button type="button" class="btn btn-ghost" id="paste-vypis-parse">Spracovať</button>
+        </div>
+        <p class="paste-vypis-err" id="paste-vypis-err" hidden></p>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', (e) => { if (e.target === el) closePasteVypisModal(); });
+  el.querySelector('#paste-vypis-close').addEventListener('click', closePasteVypisModal);
+  const ta = el.querySelector('#paste-vypis-text');
+  ta.addEventListener('paste', (e) => {
+    const html = e.clipboardData?.getData('text/html') || '';
+    const text = e.clipboardData?.getData('text/plain') || '';
+    const raw = looksLikeVypis(html) ? html : text;
+    if (!raw) return;
+    e.preventDefault();
+    ta.value = text.slice(0, 4000);
+    applyPastedVypis(raw);
+  });
+  el.querySelector('#paste-vypis-clip').addEventListener('click', async () => {
+    const raw = await readClipboardVypis();
+    if (!raw) {
+      setPasteVypisError('Schránka je prázdna alebo k nej nie je prístup. Vložte výpis do poľa (Ctrl+V).');
+      ta.focus();
+      return;
+    }
+    ta.value = String(raw).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    applyPastedVypis(raw);
+  });
+  el.querySelector('#paste-vypis-parse').addEventListener('click', () => {
+    applyPastedVypis(ta.value);
+  });
+  return el;
+}
+
+function setPasteVypisError(msg) {
+  const err = document.getElementById('paste-vypis-err');
+  if (!err) return;
+  err.hidden = !msg;
+  err.textContent = msg || '';
+}
+
+async function readClipboardVypis() {
+  try {
+    if (navigator.clipboard?.read) {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        if (item.types.includes('text/html')) {
+          const html = await (await item.getType('text/html')).text();
+          if (looksLikeVypis(html)) return html;
+        }
+      }
+    }
+  } catch (_) {}
+  try {
+    return await navigator.clipboard.readText();
+  } catch (_) {
+    return '';
+  }
+}
+
+function applyPastedVypis(raw) {
+  const ctx = { ...pasteTargetFromDossier(), ..._pasteCtx };
+  const res = ingestVypis(raw, ctx);
+  if (!res.ok) {
+    setPasteVypisError(res.error);
+    return;
+  }
+  setPasteVypisError('');
+  closePasteVypisModal();
+  const name = ctx.name || ovSearch.pickName || '';
+  const b = personParcelBreakdown(res.parsed, name);
+  const who = name ? ` pre ${name}` : '';
+  if (b.onLv) {
+    showToast(`Výpis LV ${res.lv}: ${fmtM2(b.ichTotal)} z ${fmtM2(b.lvTotal)}${who}. k.ú. + LV sú v schránke.`, 'success', { ms: 8000 });
+  } else {
+    showToast(`Výpis LV ${res.lv}: ${fmtM2(b.lvTotal)} listu. Meno nie je aktuálny vlastník. k.ú. + LV sú v schránke.`, 'info', { ms: 9000 });
+  }
+}
+
+function openPasteVypisModal(ctx = {}) {
+  const fallback = pasteTargetFromDossier();
+  _pasteCtx = {
+    lv: ctx.lv || fallback.lv,
+    ku: ctx.ku || fallback.ku,
+    kuName: ctx.kuName || fallback.kuName,
+    name: ctx.name || fallback.name,
+  };
+  const el = ensurePasteVypisModal();
+  const sub = [];
+  if (_pasteCtx.kuName) sub.push(_pasteCtx.kuName);
+  if (_pasteCtx.ku) sub.push(`k.ú. ${_pasteCtx.ku}`);
+  if (_pasteCtx.lv) sub.push(`LV ${_pasteCtx.lv}`);
+  if (_pasteCtx.name) sub.push(_pasteCtx.name);
+  el.querySelector('#paste-vypis-sub').textContent = sub.join(' · ');
+  setPasteVypisError('');
+  const ta = el.querySelector('#paste-vypis-text');
+  ta.value = '';
+  el.hidden = false;
+  document.body.classList.add('paste-vypis-open');
+  setTimeout(() => ta.focus(), 0);
+}
+window.openPasteVypisModal = openPasteVypisModal;
+
+function closePasteVypisModal() {
+  const el = document.getElementById('paste-vypis-modal');
+  if (!el) return;
+  el.hidden = true;
+  document.body.classList.remove('paste-vypis-open');
+}
+
+async function tryLocalLvPreview(lvs) {
+  if (!shouldTryInPageVypis()) return;
+  for (const r of lvs || []) {
+    if (getLvExtract(r.cislo_ku || r.ku, r.lv)) continue;
+    const html = await loadVypisHtml(r.lv, r.cislo_ku || r.ku);
+    if (isLvVypisHtml(html) && looksLikeVypis(html)) {
+      ingestVypis(html, {
+        lv: r.lv,
+        ku: r.cislo_ku || r.ku,
+        kuName: r.ku_name || r.kuName || '',
+        name: ovSearch.pickName || '',
+        silent: true,
+      });
+    }
+  }
 }
 
 function openNewTab(url) {
@@ -853,6 +1181,9 @@ function lvLinksHtml(lv, ku, kuName, vypisLabel = 'Výpis') {
        href="${katasterVypisUrl(lv, ku)}"
        data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
        title="Výpis z LV ${fmt(lv)} (${esc(place)})">${vypisLabel}</a>
+    <button type="button" class="btn-paste-vypis"
+      data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
+      title="Vložiť skopírovaný výpis z Katastra">Vložiť výpis</button>
     <button type="button" class="btn-zbgis-link"
       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
       title="ZBGIS mapa — parcela LV ${esc(lv)} v k.ú. ${esc(place)}">ZBGIS mapa</button>
@@ -992,7 +1323,7 @@ function closeVypisModal() {
 }
 
 function openOfficialVypis({ lv, ku, kuName = '', url } = {}) {
-  copyKuLvToClipboard(kuName, ku, lv);
+  _lastVypis = { lv, ku, kuName };
   showCaptchaToast();
   const name = vypisWindowName(ku, lv);
   const href = url || (ku && lv
@@ -1002,58 +1333,19 @@ function openOfficialVypis({ lv, ku, kuName = '', url } = {}) {
 }
 
 async function openVypisModal({ lv, ku, kuName = '' } = {}) {
-  if (!lv || !ku) {
-    openOfficialVypis({ lv, ku, kuName });
-    return;
+  if (shouldTryInPageVypis() && lv && ku) {
+    const html = await loadVypisHtml(lv, ku);
+    if (isLvVypisHtml(html) && looksLikeVypis(html)) {
+      const res = ingestVypis(html, {
+        lv, ku, kuName, name: ovSearch.pickName || '', silent: true,
+      });
+      if (res.ok) {
+        showToast('Výpis načítaný z lokálneho API. Parcely sú pri mene v dosieri.', 'success');
+        return;
+      }
+    }
   }
-  const url = katasterVypisUrl(lv, ku);
-  if (!shouldTryInPageVypis()) {
-    openOfficialVypis({ lv, ku, kuName, url });
-    return;
-  }
-  const modal = ensureVypisModal();
-  modal.hidden = false;
-  document.body.classList.add('vypis-open');
-  document.getElementById('vypis-title').textContent = `Výpis LV ${lv}`;
-  document.getElementById('vypis-sub').textContent = kuName ? `${kuName} · k.ú. ${ku}` : `k.ú. ${ku}`;
-  const ext = document.getElementById('vypis-ext');
-  const fallbackLink = document.getElementById('vypis-fallback-link');
-  const zbgisBtn = document.getElementById('vypis-zbgis');
-  const winName = vypisWindowName(ku, lv);
-  ext.href = url;
-  ext.target = winName;
-  fallbackLink.href = url;
-  fallbackLink.target = winName;
-  if (zbgisBtn) {
-    zbgisBtn.dataset.lv = String(lv);
-    zbgisBtn.dataset.ku = String(ku);
-    zbgisBtn.dataset.kuname = kuName || '';
-  }
-  const loading = document.getElementById('vypis-loading');
-  const frame = document.getElementById('vypis-frame');
-  const fallback = document.getElementById('vypis-fallback');
-  loading.hidden = false;
-  frame.hidden = true;
-  fallback.hidden = true;
-  frame.removeAttribute('srcdoc');
-  frame.removeAttribute('src');
-
-  const html = await loadVypisHtml(lv, ku);
-  if (isLvVypisHtml(html)) {
-    frame.srcdoc = sanitizeLvHtml(html);
-    frame.hidden = false;
-    loading.hidden = true;
-    return;
-  }
-  loading.hidden = true;
-  copyKuLvToClipboard(kuName, ku, lv);
-  showCaptchaToast();
-  const opened = window.open(url, winName);
-  if (opened) {
-    closeVypisModal();
-    return;
-  }
-  fallback.hidden = false;
+  openOfficialVypis({ lv, ku, kuName });
 }
 
 function openKatasterLV(kuName, kuCislo, lv) {
@@ -1073,6 +1365,11 @@ window.closeVypisModal = closeVypisModal;
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  const paste = document.getElementById('paste-vypis-modal');
+  if (paste && !paste.hidden) {
+    closePasteVypisModal();
+    return;
+  }
   const help = document.getElementById('parcel-help-modal');
   if (help && !help.hidden) {
     closeParcelHelp();
@@ -1086,6 +1383,17 @@ document.addEventListener('click', (e) => {
   if (e.target.closest?.('button.btn-parcel-help, button.lv-portal-help-btn')) {
     e.preventDefault();
     openParcelHelp();
+    return;
+  }
+  const pasteBtn = e.target.closest?.('button.btn-paste-vypis');
+  if (pasteBtn) {
+    e.preventDefault();
+    openPasteVypisModal({
+      lv: pasteBtn.dataset.lv,
+      ku: pasteBtn.dataset.ku,
+      kuName: pasteBtn.dataset.kuname || '',
+      name: ovSearch.pickName || '',
+    });
     return;
   }
   const z = e.target.closest?.('button.btn-zbgis-link');
@@ -2507,8 +2815,10 @@ async function loadDossier(name, ku) {
   try {
     const data = await apiFetch(`/name-ku-detail?names=${namesParam(name)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
     if (data.error) throw new Error(data.error);
+    rememberExtracts(data.extracts || {});
     renderDossier(data);
     renderCrumb();
+    tryLocalLvPreview(data.lvs || []).catch(() => {});
   } catch (e) {
     box.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
   }
@@ -2581,6 +2891,11 @@ function renderDossier(data) {
                 <td class="cell-muted">${esc(r.variants || '—')}</td>
                 <td class="cell-muted">${esc(xferTxt)}</td>
                 <td>${lvLinksHtml(r.lv, r.cislo_ku, r.ku_name, 'Výpis')}</td>
+              </tr>
+              <tr class="lv-extract-row">
+                <td colspan="8">
+                  <div class="lv-extract" id="lv-extract-${esc(r.cislo_ku)}-${esc(r.lv)}" data-lv="${esc(r.lv)}" data-ku="${esc(r.cislo_ku)}">${extractPanelInner(r.lv, r.cislo_ku, s.name)}</div>
+                </td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -2597,8 +2912,8 @@ function renderDossier(data) {
         <span class="badge ${chance.cls}">Šanca ${chance.label}</span>
       </header>
       <p class="insight-note">
-        Odhad podielu je súčet 1/N na každom liste, kde N je počet neznámych z tohto registra — nie výmera z katastra.
-        Solo LV = na liste nie je iný neznámy; to je najlepší kandidát na väčší kus pôdy.
+        Odhad podielu v tabuľke je 1/N z registra nezistených — nie výmera z katastra.
+        Po vložení výpisu sú pri každom LV parcely, podiel z ČASTI B a ich m² vs celok.
       </p>
       <div class="stat-grid ov-search-stats">
         <div class="stat-card"><div class="stat-label">LV v tomto k.ú.</div><div class="stat-value">${fmt(s.lvs)}</div></div>
@@ -2607,9 +2922,10 @@ function renderDossier(data) {
         <div class="stat-card"><div class="stat-label">Ø spoluvlastníkov</div><div class="stat-value">${s.avg_co ?? '—'}</div><div class="stat-sub">neznámych na LV</div></div>
       </div>
       <div class="bulk-lv-bar">
-        <div>Otvoriť výpisy z katastra pre toto meno v tomto k.ú.</div>
+        <div>Výpisy z Katastra pre toto meno v tomto k.ú.</div>
         <div class="dossier-actions">
           <button class="bulk-lv-btn" type="button" onclick="window.shareSearchLink()">Zdieľať</button>
+          <button class="bulk-lv-btn bulk-lv-btn-paste" type="button" onclick="window.openPasteVypisModal({})">Vložiť výpis</button>
           ${solo.length ? `<button class="bulk-lv-btn bulk-lv-btn-solo" type="button" onclick="window.openAllLvs(window._soloLvs)">Otvoriť ${solo.length} solo výpisov</button>` : ''}
           ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
@@ -2967,12 +3283,13 @@ function openAllLvs(lvs) {
     count: lvs.length,
   });
   showToast(
-    `Otváram ${lvs.length} výpisov na Katastri. Na každom zaškrtnite „Nie som robot“ (ÚGKK, nie my).`,
+    `Otváram ${lvs.length} výpisov na Katastri. Na každom „Nie som robot“ (ÚGKK). Potom skopírujte výpis a v PZF Vložiť výpis.`,
     'info',
-    { ms: 10000, actionLabel: 'Ako nájsť parcelu', onAction: openParcelHelp },
+    { ms: 12000, actionLabel: 'Vložiť výpis', onAction: () => openPasteVypisModal({}) },
   );
   lvs.forEach((item, i) => {
     setTimeout(() => {
+      _lastVypis = { lv: item.lv, ku: item.ku, kuName: item.kuName || '' };
       window.open(katasterVypisUrl(item.lv, item.ku), vypisWindowName(item.ku, item.lv));
     }, i * 150);
   });
@@ -4821,6 +5138,8 @@ window.toggleTheme = toggleTheme;
 async function boot() {
   try {
     await initDb();
+    loadExtractStore();
+    hydrateExtractsIntoDb().catch(() => {});
     showSourceBannerIfNeeded();
     loadKuCentroidIndex().catch(() => {});
     const sharedQ = searchQueryFromUrl();

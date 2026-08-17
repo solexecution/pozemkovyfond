@@ -2,7 +2,7 @@
  * DuckDB WASM client — replaces the Express API for static GitHub Pages.
  */
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
-import { parseLvText } from './lv_parser.js';
+import { parseVypisInput } from './lv_parser.js';
 import { isLvVypisHtml } from './lv-html.js';
 
 const DATA_CACHE = 'pzf-data-v6';
@@ -412,9 +412,11 @@ export async function initDb() {
   await registerParquet('solo_lvs.parquet', 'solo LV', 18, 24);
   await registerParquet('unknown_owners.parquet', 'register (cache po 1. načítaní)', 24, 78);
   await registerParquet('transferred_rights.parquet', 'prevedené práva', 78, 84);
-  await registerParquet('lv_details.parquet', 'uložené LV', 84, 86);
-  await registerParquet('lv_owners.parquet', 'vlastníkov LV', 86, 88);
-  await registerParquet('lv_parcels.parquet', 'parcely LV', 88, 90);
+  try {
+    await registerParquet('lv_details.parquet', 'uložené LV', 84, 86);
+    await registerParquet('lv_owners.parquet', 'vlastníkov LV', 86, 88);
+    await registerParquet('lv_parcels.parquet', 'parcely LV', 88, 90);
+  } catch (_) { /* local-only / missing on some deploys */ }
 
   setStatus('Pripravujem tabuľky...');
   await queryRun(`CREATE OR REPLACE VIEW unknown_owners AS SELECT * FROM read_parquet('unknown_owners.parquet')`);
@@ -445,7 +447,9 @@ export async function initDb() {
       PRIMARY KEY (lv, cislo_ku)
     )
   `);
-  await queryRun(`INSERT OR REPLACE INTO lv_details SELECT * FROM read_parquet('lv_details.parquet')`);
+  try {
+    await queryRun(`INSERT OR REPLACE INTO lv_details SELECT * FROM read_parquet('lv_details.parquet')`);
+  } catch (_) { /* optional */ }
 
   await queryRun(`
     CREATE TABLE lv_parcels (
@@ -458,7 +462,9 @@ export async function initDb() {
       druh_pozemku VARCHAR
     )
   `);
-  await queryRun(`INSERT OR REPLACE INTO lv_parcels SELECT * FROM read_parquet('lv_parcels.parquet')`);
+  try {
+    await queryRun(`INSERT OR REPLACE INTO lv_parcels SELECT * FROM read_parquet('lv_parcels.parquet')`);
+  } catch (_) { /* optional */ }
 
   await queryRun(`
     CREATE TABLE lv_owners (
@@ -475,7 +481,9 @@ export async function initDb() {
       titul_nadobudnutia VARCHAR
     )
   `);
-  await queryRun(`INSERT OR REPLACE INTO lv_owners SELECT * FROM read_parquet('lv_owners.parquet')`);
+  try {
+    await queryRun(`INSERT OR REPLACE INTO lv_owners SELECT * FROM read_parquet('lv_owners.parquet')`);
+  } catch (_) { /* optional */ }
 
   await queryRun(`
     CREATE OR REPLACE VIEW v_top_katastralne AS
@@ -865,7 +873,12 @@ async function nameKuDetail(q) {
     }
   }
 
-  return { summary, lvs, transferred, coowners };
+  let extracts = {};
+  if (lvs.length) {
+    extracts = await lvExtractsByKeys(lvs.map((r) => ({ lv: r.lv, ku: r.cislo_ku })));
+  }
+
+  return { summary, lvs, transferred, coowners, extracts };
 }
 
 async function soloLvs(q) {
@@ -932,6 +945,108 @@ async function lvParcels(q) {
   } catch (_) {
     return { parcels: [] };
   }
+}
+
+async function lvExtractOne(lv, ku) {
+  const nLv = Number(lv);
+  const nKu = Number(ku);
+  if (!Number.isFinite(nLv) || !Number.isFinite(nKu) || nLv <= 0 || nKu <= 0) {
+    return { details: null, parcels: [], owners: [] };
+  }
+  let details = [];
+  let parcels = [];
+  let owners = [];
+  try {
+    details = await queryObjects(`
+      SELECT lv, cislo_ku, nazov_ku, okres, obec, pocet_parciel_c, pocet_parciel_e,
+             celkova_vymera_m2, pocet_vlastnikov
+      FROM lv_details
+      WHERE lv = ${nLv} AND cislo_ku = ${nKu}
+      LIMIT 1
+    `);
+  } catch (_) {}
+  try {
+    parcels = await queryObjects(`
+      SELECT lv, cislo_ku, register_type, parcel_no, vymera_m2, druh_pozemku
+      FROM lv_parcels
+      WHERE lv = ${nLv} AND cislo_ku = ${nKu}
+      ORDER BY CASE WHEN register_type = 'C' THEN 0 ELSE 1 END, vymera_m2 DESC NULLS LAST, parcel_no
+    `);
+  } catch (_) {}
+  try {
+    owners = await queryObjects(`
+      SELECT lv, cislo_ku, poradove_cislo, meno_vlastnika, datum_narodenia,
+             podiel_str, podiel_num, podiel_den, podiel_decimal, titul_nadobudnutia
+      FROM lv_owners
+      WHERE lv = ${nLv} AND cislo_ku = ${nKu}
+      ORDER BY poradove_cislo
+    `);
+  } catch (_) {}
+  return {
+    details: details[0] || null,
+    parcels,
+    owners,
+  };
+}
+
+async function lvExtractsByKeys(pairs) {
+  const out = {};
+  const keys = (pairs || []).filter((p) => Number(p.lv) > 0 && Number(p.ku) > 0);
+  if (!keys.length) return out;
+  const lvList = [...new Set(keys.map((p) => Number(p.lv)))].join(',');
+  const kuList = [...new Set(keys.map((p) => Number(p.ku)))].join(',');
+  let details = [];
+  let parcels = [];
+  let owners = [];
+  try {
+    details = await queryObjects(`
+      SELECT lv, cislo_ku, nazov_ku, okres, obec, pocet_parciel_c, pocet_parciel_e,
+             celkova_vymera_m2, pocet_vlastnikov
+      FROM lv_details
+      WHERE lv IN (${lvList}) AND cislo_ku IN (${kuList})
+    `);
+  } catch (_) {}
+  try {
+    parcels = await queryObjects(`
+      SELECT lv, cislo_ku, register_type, parcel_no, vymera_m2, druh_pozemku
+      FROM lv_parcels
+      WHERE lv IN (${lvList}) AND cislo_ku IN (${kuList})
+      ORDER BY CASE WHEN register_type = 'C' THEN 0 ELSE 1 END, vymera_m2 DESC NULLS LAST, parcel_no
+    `);
+  } catch (_) {}
+  try {
+    owners = await queryObjects(`
+      SELECT lv, cislo_ku, poradove_cislo, meno_vlastnika, datum_narodenia,
+             podiel_str, podiel_num, podiel_den, podiel_decimal, titul_nadobudnutia
+      FROM lv_owners
+      WHERE lv IN (${lvList}) AND cislo_ku IN (${kuList})
+      ORDER BY poradove_cislo
+    `);
+  } catch (_) {}
+  const wanted = new Set(keys.map((p) => `${Number(p.ku)}:${Number(p.lv)}`));
+  for (const key of wanted) {
+    const [ku, lv] = key.split(':').map(Number);
+    const d = details.find((r) => Number(r.lv) === lv && Number(r.cislo_ku) === ku) || null;
+    const p = parcels.filter((r) => Number(r.lv) === lv && Number(r.cislo_ku) === ku);
+    const o = owners.filter((r) => Number(r.lv) === lv && Number(r.cislo_ku) === ku);
+    if (!d && !p.length && !o.length) continue;
+    out[key] = {
+      doc: d || {
+        lv, cislo_ku: ku, nazov_ku: '',
+        pocet_parciel_c: p.filter((x) => x.register_type === 'C').length,
+        pocet_parciel_e: p.filter((x) => x.register_type === 'E').length,
+        celkova_vymera_m2: p.reduce((s, x) => s + (Number(x.vymera_m2) || 0), 0),
+        pocet_vlastnikov: o.length,
+      },
+      parcels: p,
+      owners: o,
+    };
+  }
+  return out;
+}
+
+async function lvExtract(q) {
+  return lvExtractOne(q.lv, q.ku);
 }
 
 async function owners(q) {
@@ -1217,10 +1332,24 @@ async function saveLvData(body) {
   for (const item of items) {
     const lv = parseInt(item.lv, 10);
     const ku = parseInt(item.ku, 10);
-    const text = item.text || '';
-    if (!lv || !ku || !text || text.length < 200) continue;
-    const parsed = parseLvText(text, lv, ku);
-    const doc = parsed.doc;
+    const raw = item.html || item.text || '';
+    const hasParsed = Array.isArray(item.parsed?.parcels) || Array.isArray(item.parsed?.owners);
+    if (!lv || !ku) continue;
+    if (!hasParsed && (!raw || raw.length < 80)) continue;
+    const parsed = hasParsed ? item.parsed : parseVypisInput(raw, lv, ku);
+    const doc = {
+      ...(parsed.doc || {}),
+      lv: parsed.doc?.lv || lv,
+      cislo_ku: parsed.doc?.cislo_ku || ku,
+      nazov_ku: parsed.doc?.nazov_ku || item.kuName || '',
+      okres: parsed.doc?.okres || '',
+      obec: parsed.doc?.obec || '',
+      pocet_parciel_c: parsed.doc?.pocet_parciel_c ?? (parsed.parcels || []).filter((p) => p.register_type === 'C').length,
+      pocet_parciel_e: parsed.doc?.pocet_parciel_e ?? (parsed.parcels || []).filter((p) => p.register_type === 'E').length,
+      celkova_vymera_m2: parsed.doc?.celkova_vymera_m2 ?? (parsed.parcels || []).reduce((s, p) => s + (Number(p.vymera_m2) || 0), 0),
+      pocet_vlastnikov: parsed.doc?.pocet_vlastnikov ?? (parsed.owners || []).length,
+    };
+    if (!parsed.parcels?.length && !parsed.owners?.length) continue;
 
     await queryRun(`
       INSERT OR REPLACE INTO lv_details
@@ -1237,7 +1366,7 @@ async function saveLvData(body) {
     `);
     savedDocs++;
 
-    for (const p of parsed.parcels) {
+    for (const p of parsed.parcels || []) {
       const pId = `${doc.cislo_ku}_${doc.lv}_${p.register_type}_${p.parcel_no}`.replace(/[/\s]/g, '_');
       await queryRun(`
         INSERT OR REPLACE INTO lv_parcels
@@ -1251,7 +1380,7 @@ async function saveLvData(body) {
       savedParcels++;
     }
 
-    for (const o of parsed.owners) {
+    for (const o of parsed.owners || []) {
       const oId = `${doc.cislo_ku}_${doc.lv}_${o.poradove_cislo}`;
       await queryRun(`
         INSERT OR REPLACE INTO lv_owners
@@ -1394,6 +1523,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'lv-parcels':
       result = await lvParcels(q);
+      break;
+    case 'lv-extract':
+      result = await lvExtract(q);
       break;
     case 'owners':
       result = await owners(q);
