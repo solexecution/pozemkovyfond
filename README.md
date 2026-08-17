@@ -22,11 +22,7 @@ In-page náhľad výpisu z LV (modal) potrebuje backend proxy:
 npm run start:api   # Express + /api/lv-preview (Playwright, ak jednoduchý fetch vráti reCAPTCHA)
 ```
 
-Na GitHub Pages proxy nie je — klik na **Výpis** otvorí Kataster v novom okne. Captcha („Nie som robot“) je ÚGKK; PZF ju nerieši. Po načítaní výpisu:
-
-1. **Chrome rozšírenie** (odporúčané): priečinok [`extension/`](extension/) — v `chrome://extensions` zapnite vývojársky režim a **Načítať rozbalené**. Potom PZF výpis prevezme samo.
-2. **Záložka** „PZF: načítať výpis“ otvorí `vypis-recv.html` a pošle HTML cez `postMessage` (funguje aj keď `window.opener` je `null`).
-3. **Schránka** ako posledná možnosť.
+Na GitHub Pages proxy nie je — klik na **Výpis** otvorí Kataster v samostatnom okne (`GeneratePrfPublic`) a skopíruje k.ú. + LV do schránky. **ZBGIS mapa** otvorí MAPKA na parcele z `lv_parcels`, inak na strede k.ú.
 
 Voliteľne nastavte `window.PZF_LV_PROXY` v `index.html` na URL, ktorá vráti HTML výpisu (musí to byť už dokument, nie captcha stránka).
 

@@ -6,7 +6,6 @@
 
 import { initDb, apiRequest } from './db.js';
 import { isLvVypisHtml } from './lv-html.js';
-import { parseVypisInput, looksLikeVypis, personParcelBreakdown } from './lv_parser.js';
 
 async function apiFetch(path, options = {}) {
   const data = await apiRequest(path, options);
@@ -85,12 +84,6 @@ const PALETTE = [
 function fmt(n) {
   if (n === null || n === undefined) return '—';
   return Number(n).toLocaleString('sk-SK');
-}
-function fmtM2(n) {
-  if (n === null || n === undefined || !Number.isFinite(Number(n))) return '—';
-  const v = Number(n);
-  const rounded = Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : Math.round(v * 10) / 10;
-  return `${fmt(rounded)} m²`;
 }
 function fmtDate(s) { return s || '—'; }
 
@@ -316,25 +309,6 @@ function vypisWindowName(ku, lv) {
   return `pzf-vypis-${ku || 'ku'}-${lv || 'lv'}`;
 }
 
-if (!window.name) window.name = 'pzf-main';
-
-const PZF_VYPIS_MSG = 'pzf-vypis';
-const PZF_VYPIS_CHANNEL = 'pzf-vypis';
-const PZF_VYPIS_INBOX = 'pzf-vypis-inbox';
-const KATASTER_ORIGIN = 'https://kataster.skgeodesy.sk';
-const EXT_REPO_URL = 'https://github.com/solexecution/pozemkovyfond/tree/main/extension';
-const EXT_ZIP_URL = 'https://github.com/solexecution/pozemkovyfond/archive/refs/heads/main.zip';
-const _vypisWindows = new Map();
-let _awaitingVypis = false;
-let _vypisOpenedAt = 0;
-let _vypisReturnHintShown = false;
-let _vypisReturnTimer = 0;
-let _pzfExt = false;
-let _bootReady = false;
-let _pendingVypis = [];
-let _lastIngestSig = '';
-let _vypisChannel = null;
-
 function copyKuLvToClipboard(kuName, ku, lv) {
   const kuText = String(kuName || '').trim();
   const info = `${kuText}${ku ? ` (k.ú. ${ku})` : ''}, LV ${lv}`;
@@ -343,751 +317,8 @@ function copyKuLvToClipboard(kuName, ku, lv) {
   } catch (_) {}
 }
 
-function pzfAppBaseUrl() {
-  const u = new URL(location.href);
-  u.hash = '';
-  u.search = '';
-  let path = u.pathname || '/';
-  if (!path.endsWith('/')) path = path.replace(/[^/]+$/, '') || '/';
-  u.pathname = path;
-  return u.href;
-}
-
-function pzfRecvUrl() {
-  return new URL('vypis-recv.html', pzfAppBaseUrl()).href;
-}
-
-function pzfHasExt() {
-  return _pzfExt || document.documentElement.dataset.pzfExt === '1';
-}
-
-function pzfBookmarkletCode() {
-  const origin = JSON.stringify(location.origin);
-  const recv = JSON.stringify(pzfRecvUrl());
-  const type = JSON.stringify(PZF_VYPIS_MSG);
-  return `(function(){var h=document.documentElement.outerHTML,m={type:${type},html:h},o=${origin},r=${recv},w=null;try{w=window.open(r,"pzf-vypis-recv")}catch(e){}function s(){if(w&&!w.closed){try{w.postMessage(m,o)}catch(e){}}if(window.opener&&!window.opener.closed){try{window.opener.postMessage(m,o)}catch(e){}}}if(!w){try{navigator.clipboard.writeText(h)}catch(e){}}s();setTimeout(s,400);setTimeout(s,1200);setTimeout(s,2500);try{w&&w.focus()}catch(e){}})();`;
-}
-
-function pzfBookmarkletHref() {
-  return `javascript:${encodeURIComponent(pzfBookmarkletCode())}`;
-}
-
-function bindBookmarkletLinks(root = document) {
-  const href = pzfBookmarkletHref();
-  root.querySelectorAll('a.pzf-bookmarklet').forEach((a) => {
-    a.href = href;
-    a.draggable = true;
-  });
-}
-
-function bookmarkletLinkHtml(extraClass = '') {
-  const cls = ['pzf-bookmarklet', extraClass].filter(Boolean).join(' ');
-  return `<a class="${cls}" href="#" draggable="true" title="Presuňte do panela záložiek. Na karte Katastra po captcha kliknite.">PZF: načítať výpis</a>`;
-}
-
-function extInstallBtnHtml(extraClass = '') {
-  if (pzfHasExt()) {
-    return `<span class="pzf-ext-on${extraClass ? ` ${extraClass}` : ''}">Rozšírenie aktívne</span>`;
-  }
-  return `<button type="button" class="btn-ext-install${extraClass ? ` ${extraClass}` : ''}" title="Inštalácia v chrome://extensions — Načítať rozbalené → priečinok extension/">Nainštalovať rozšírenie</button>`;
-}
-
-function captchaOneLiner() {
-  return '„Nie som robot“ musíte zaškrtnúť vy — to je Kataster (ÚGKK), nie my. Captcha za vás neurobíme.';
-}
-
-function showCaptchaToast() {
-  if (pzfHasExt()) {
-    showToast(
-      `${captchaOneLiner()} Keď sa výpis načíta, PZF ho vezme samo.`,
-      'info',
-      { ms: 14000 },
-    );
-    return;
-  }
-  showToast(
-    `${captchaOneLiner()} Potom záložka „PZF: načítať výpis“, alebo nainštalujte rozšírenie (raz).`,
-    'info',
-    {
-      ms: 16000,
-      actionLabel: 'Ako načítať',
-      onAction: () => openGrabHelp(),
-    },
-  );
-}
-
-function lvPortalHintHtml() {
-  if (pzfHasExt()) {
-    return `<p class="lv-portal-hint">
-      <strong>Výpis</strong> otvorí Kataster. ${captchaOneLiner()}
-      Po načítaní výpisu ho rozšírenie odošle sem samo.
-      <button type="button" class="lv-portal-help-btn">Ako nájsť parcelu</button>
-    </p>`;
-  }
-  return `<p class="lv-portal-hint">
-    <strong>Výpis</strong> otvorí Kataster. ${captchaOneLiner()}
-    Najlepšie: ${extInstallBtnHtml()} (raz) — potom sa výpis načíta sám.
-    Záložka ${bookmarkletLinkHtml()} je záloha. Schránka ako posledná možnosť.
-    <button type="button" class="lv-portal-help-btn">Ako nájsť parcelu</button>
-  </p>`;
-}
-
-function ensureParcelHelpModal() {
-  let el = document.getElementById('parcel-help-modal');
-  if (el) return el;
-  el = document.createElement('div');
-  el.id = 'parcel-help-modal';
-  el.hidden = true;
-  el.innerHTML = `
-    <div class="parcel-help-dialog" role="dialog" aria-modal="true" aria-labelledby="parcel-help-title">
-      <div class="parcel-help-head">
-        <h2 id="parcel-help-title">Ako nájsť parcelu</h2>
-        <button type="button" class="vypis-close" id="parcel-help-close" aria-label="Zavrieť">×</button>
-      </div>
-      <div class="parcel-help-body">
-        <p>Nové hľadania často nemajú čísla parciel u nás. ZBGIS preto neskočí na pozemok. Treba to z Katastra.</p>
-        <ol>
-          <li><strong>Výpis.</strong> Otvorí sa Kataster (ÚGKK). ${captchaOneLiner()} S rozšírením príde výpis do PZF sám. Inak záložka ${bookmarkletLinkHtml()}. Schránku pri otvorení necháme voľnú.</li>
-          <li><strong>ČASŤ A: MAJETKOVÁ PODSTATA.</strong> Tam sú parcely registra C a E. Zoberte číslo parcely.</li>
-          <li><strong>MAPKA</strong> (téma Kataster nehnuteľností). Do poľa <strong>Vyhľadávanie</strong> zadajte obec alebo k.ú. a stlačte <strong>zámok</strong> (hľadať len v tom území). Potom zadajte <strong>číslo parcely</strong> alebo <strong>číslo LV</strong> a kliknite na výsledok.</li>
-          <li>Alebo v mape otvorte <strong>Informácie z mapy</strong> a kliknite na pozemok.</li>
-        </ol>
-        <button type="button" class="btn" id="parcel-help-done">Zavrieť</button>
-      </div>
-    </div>`;
-  document.body.appendChild(el);
-  const close = () => {
-    el.hidden = true;
-    document.body.classList.remove('parcel-help-open');
-  };
-  el.addEventListener('click', (e) => { if (e.target === el) close(); });
-  el.querySelector('#parcel-help-close').addEventListener('click', close);
-  el.querySelector('#parcel-help-done').addEventListener('click', close);
-  bindBookmarkletLinks(el);
-  return el;
-}
-
-function openParcelHelp() {
-  const el = ensureParcelHelpModal();
-  bindBookmarkletLinks(el);
-  el.hidden = false;
-  document.body.classList.add('parcel-help-open');
-}
-function closeParcelHelp() {
-  const el = document.getElementById('parcel-help-modal');
-  if (!el) return;
-  el.hidden = true;
-  const grab = document.getElementById('grab-help-modal');
-  if (!grab || grab.hidden) document.body.classList.remove('parcel-help-open');
-}
-window.openParcelHelp = openParcelHelp;
-
 function katasterVypisUrl(lv, kuCode) {
   return `https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${encodeURIComponent(lv)}&cadastralUnitCode=${encodeURIComponent(kuCode)}&outputType=html`;
-}
-
-const LV_EXTRACT_STORE = 'pzf-lv-extracts-v1';
-const _lvExtracts = new Map();
-let _pasteCtx = {};
-let _lastVypis = {};
-
-function extractKey(ku, lv) {
-  return `${Number(ku) || 0}:${Number(lv) || 0}`;
-}
-
-function loadExtractStore() {
-  try {
-    const raw = localStorage.getItem(LV_EXTRACT_STORE);
-    if (!raw) return;
-    const obj = JSON.parse(raw);
-    for (const [k, v] of Object.entries(obj || {})) {
-      if (v && (v.parcels || v.owners || v.doc)) _lvExtracts.set(k, v);
-    }
-  } catch (_) {}
-}
-
-function persistExtractStore() {
-  try {
-    const obj = {};
-    let n = 0;
-    for (const [k, v] of _lvExtracts) {
-      obj[k] = v;
-      if (++n >= 80) break;
-    }
-    localStorage.setItem(LV_EXTRACT_STORE, JSON.stringify(obj));
-  } catch (_) {}
-}
-
-function getLvExtract(ku, lv) {
-  return _lvExtracts.get(extractKey(ku, lv)) || null;
-}
-
-function setLvExtract(ku, lv, parsed) {
-  const key = extractKey(parsed?.doc?.cislo_ku || ku, parsed?.doc?.lv || lv);
-  _lvExtracts.set(key, parsed);
-  if (ku && lv && key !== extractKey(ku, lv)) _lvExtracts.set(extractKey(ku, lv), parsed);
-  persistExtractStore();
-}
-
-function rememberExtracts(extracts) {
-  for (const [key, parsed] of Object.entries(extracts || {})) {
-    if (_lvExtracts.has(key)) continue;
-    if (parsed?.parcels?.length || parsed?.owners?.length) _lvExtracts.set(key, parsed);
-  }
-}
-
-async function persistExtractToDb(parsed, ctx = {}) {
-  const lv = parsed?.doc?.lv || ctx.lv;
-  const ku = parsed?.doc?.cislo_ku || ctx.ku;
-  if (!lv || !ku) return;
-  try {
-    await apiFetch('/save-lv-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        items: [{ lv, ku, kuName: ctx.kuName || parsed.doc?.nazov_ku || '', parsed }],
-      }),
-    });
-  } catch (_) {}
-}
-
-async function hydrateExtractsIntoDb() {
-  const items = [];
-  for (const [key, parsed] of _lvExtracts) {
-    const [ku, lv] = key.split(':');
-    items.push({ lv, ku, parsed });
-  }
-  if (!items.length) return;
-  try {
-    await apiFetch('/save-lv-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items }),
-    });
-  } catch (_) {}
-}
-
-function ingestVypis(raw, ctx = {}) {
-  if (!looksLikeVypis(raw)) {
-    return { ok: false, error: 'Toto nevyzerá ako výpis z LV. Po captcha počkajte na výpis — rozšírenie ho odošle, alebo kliknite záložku „PZF: načítať výpis“.' };
-  }
-  const parsed = parseVypisInput(raw, ctx.lv || 0, ctx.ku || 0);
-  if (!parsed.parcels?.length && !parsed.owners?.length) {
-    return { ok: false, error: 'Výpis sa nepodarilo rozobrať — chýbajú parcely aj vlastníci.' };
-  }
-  const lv = parsed.doc?.lv || ctx.lv;
-  const ku = parsed.doc?.cislo_ku || ctx.ku;
-  setLvExtract(ku, lv, parsed);
-  persistExtractToDb(parsed, { ...ctx, lv, ku });
-  if (!ctx.silent) {
-    copyKuLvToClipboard(ctx.kuName || parsed.doc?.nazov_ku || '', ku, lv);
-  }
-  refreshExtractPanels();
-  return { ok: true, parsed, lv, ku };
-}
-
-function extractPanelInner(lv, ku, searchName) {
-  const parsed = getLvExtract(ku, lv);
-  if (!parsed) {
-    return `<p class="lv-extract-empty">Výmera z katastra zatiaľ nie je. Otvorte <strong>Výpis</strong>. ${captchaOneLiner()} ${pzfHasExt() ? 'Potom to PZF načíta samo.' : `Najlepšie ${extInstallBtnHtml()}. Záložka ${bookmarkletLinkHtml()}, alebo <strong>Načítať z Katastra / zo schránky</strong>.`}</p>`;
-  }
-  const b = personParcelBreakdown(parsed, searchName || '');
-  const ownerLine = b.onLv
-    ? `Na LV: ${esc(b.matches.map((m) => m.meno_vlastnika).join(' · '))}${b.matches[0]?.datum_narodenia ? ` · ${esc(b.matches[0].datum_narodenia)}` : ''} · podiel <strong>${esc(b.podiel_str)}</strong>`
-    : `Toto meno je v registri nezistených, ale na aktuálnom LV ako vlastník nie je. Nižšie je výmera parciel listu.`;
-  const rows = (b.parcels || []).map((p) => `
-    <tr>
-      <td>${esc(p.parcel_no)}</td>
-      <td>${esc(p.register_type || '—')}</td>
-      <td class="cell-muted">${esc(p.druh_pozemku || '—')}</td>
-      <td>${fmtM2(p.vymera_m2)}</td>
-      <td>${b.onLv ? esc(p.podiel_str || '—') : '—'}</td>
-      <td>${b.onLv ? `<strong>${fmtM2(p.ich_m2)}</strong>` : '—'}</td>
-      <td class="cell-muted">${b.onLv ? `${fmtM2(p.ich_m2)} / ${fmtM2(p.vymera_m2)}` : `— / ${fmtM2(p.vymera_m2)}`}</td>
-    </tr>`).join('');
-  return `
-    <p class="lv-extract-match">${ownerLine}</p>
-    <div class="table-wrap lv-extract-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Parcela</th>
-            <th>Reg.</th>
-            <th>Druh</th>
-            <th>Výmera</th>
-            <th>Podiel</th>
-            <th>Ich m²</th>
-            <th>vs parcela</th>
-          </tr>
-        </thead>
-        <tbody>${rows || `<tr><td colspan="7" class="cell-muted">Bez parciel v ČASTI A</td></tr>`}</tbody>
-        <tfoot>
-          <tr>
-            <td colspan="3"><strong>Spolu LV</strong></td>
-            <td><strong>${fmtM2(b.lvTotal)}</strong></td>
-            <td>${b.onLv ? `<strong>${esc(b.podiel_str)}</strong>` : '—'}</td>
-            <td class="lv-extract-total">${b.onLv ? fmtM2(b.ichTotal) : '—'}</td>
-            <td>${b.onLv ? `${fmtM2(b.ichTotal)} / ${fmtM2(b.lvTotal)}` : `— / ${fmtM2(b.lvTotal)}`}</td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>`;
-}
-
-function refreshExtractPanels() {
-  document.querySelectorAll('.lv-extract[data-lv]').forEach((el) => {
-    el.innerHTML = extractPanelInner(el.dataset.lv, el.dataset.ku, ovSearch.pickName || '');
-  });
-  bindBookmarkletLinks();
-}
-
-function pasteTargetFromDossier() {
-  if (_lastVypis.lv) {
-    return {
-      lv: _lastVypis.lv,
-      ku: _lastVypis.ku,
-      kuName: _lastVypis.kuName || ovSearch.pickKu || '',
-      name: ovSearch.pickName || '',
-    };
-  }
-  const lvs = window._overviewLvs || [];
-  const first = lvs[0] || {};
-  return {
-    lv: first.lv || '',
-    ku: first.ku || '',
-    kuName: first.kuName || ovSearch.pickKu || '',
-    name: ovSearch.pickName || '',
-  };
-}
-
-function ensurePasteVypisModal() {
-  let el = document.getElementById('paste-vypis-modal');
-  if (el) return el;
-  el = document.createElement('div');
-  el.id = 'paste-vypis-modal';
-  el.hidden = true;
-  el.innerHTML = `
-    <div class="paste-vypis-dialog" role="dialog" aria-modal="true" aria-labelledby="paste-vypis-title">
-      <div class="paste-vypis-head">
-        <div>
-          <h2 id="paste-vypis-title">Načítať výpis</h2>
-          <p class="paste-vypis-sub" id="paste-vypis-sub"></p>
-        </div>
-        <button type="button" class="vypis-close" id="paste-vypis-close" aria-label="Zavrieť">×</button>
-      </div>
-      <div class="paste-vypis-body">
-        <p class="paste-vypis-hint">
-          ${captchaOneLiner()}
-          ${pzfHasExt() ? 'S rozšírením príde výpis sám.' : `Záložka ${bookmarkletLinkHtml()} otvorí PZF a pošle HTML aj keď opener nefunguje.`}
-          Schránka je posledná možnosť.
-        </p>
-        <div class="paste-vypis-actions">
-          <button type="button" class="btn" id="paste-vypis-clip">Načítať z Katastra / zo schránky</button>
-        </div>
-        <details class="paste-vypis-fallback">
-          <summary>Vložiť ručne (Ctrl+V)</summary>
-          <textarea id="paste-vypis-text" rows="5" placeholder="Záložka alebo schránka sú primárne. Sem len ak treba…"></textarea>
-          <button type="button" class="btn btn-ghost" id="paste-vypis-parse">Spracovať text</button>
-        </details>
-        <p class="paste-vypis-err" id="paste-vypis-err" hidden></p>
-      </div>
-    </div>`;
-  document.body.appendChild(el);
-  bindBookmarkletLinks(el);
-  el.addEventListener('click', (e) => { if (e.target === el) closePasteVypisModal(); });
-  el.querySelector('#paste-vypis-close').addEventListener('click', closePasteVypisModal);
-  const ta = el.querySelector('#paste-vypis-text');
-  ta.addEventListener('paste', (e) => {
-    const html = e.clipboardData?.getData('text/html') || '';
-    const text = e.clipboardData?.getData('text/plain') || '';
-    const raw = looksLikeVypis(html) ? html : text;
-    if (!raw) return;
-    e.preventDefault();
-    ta.value = text.slice(0, 4000);
-    applyGrabbedVypis(raw);
-  });
-  el.querySelector('#paste-vypis-clip').addEventListener('click', () => loadVypisFromKataster(_pasteCtx));
-  el.querySelector('#paste-vypis-parse').addEventListener('click', () => {
-    applyGrabbedVypis(ta.value);
-  });
-  return el;
-}
-
-function setPasteVypisError(msg) {
-  const err = document.getElementById('paste-vypis-err');
-  if (!err) return;
-  err.hidden = !msg;
-  err.textContent = msg || '';
-}
-
-function allowedVypisMessageOrigin(origin) {
-  return origin === location.origin || origin === KATASTER_ORIGIN;
-}
-
-function isVypisMessage(data) {
-  if (!data || typeof data !== 'object') return false;
-  if (data.type !== PZF_VYPIS_MSG && data.type !== 'pzf-vyptis') return false;
-  return typeof data.html === 'string';
-}
-
-function rememberVypisCtxFromMsg(data) {
-  const lv = data?.lv;
-  const ku = data?.ku;
-  if (!lv && !ku) return;
-  if (lv) {
-    _pasteCtx = { ..._pasteCtx, lv };
-    _lastVypis = { ..._lastVypis, lv };
-  }
-  if (ku) {
-    _pasteCtx = { ..._pasteCtx, ku };
-    _lastVypis = { ..._lastVypis, ku };
-  }
-}
-
-function vypisSig(raw) {
-  const s = String(raw || '');
-  return `${s.length}:${s.slice(120, 280)}`;
-}
-
-function revealExtractPanel(ku, lv) {
-  const el = document.querySelector(`.lv-extract[data-lv="${CSS.escape(String(lv || ''))}"][data-ku="${CSS.escape(String(ku || ''))}"]`);
-  el?.closest('.lv-extract-row')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-}
-
-async function readClipboardVypis() {
-  try {
-    if (navigator.clipboard?.read) {
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        if (item.types.includes('text/html')) {
-          const html = await (await item.getType('text/html')).text();
-          if (looksLikeVypis(html)) return html;
-        }
-      }
-    }
-  } catch (_) {}
-  try {
-    const text = await navigator.clipboard.readText();
-    return looksLikeVypis(text) ? text : '';
-  } catch (_) {
-    return '';
-  }
-}
-
-function applyGrabbedVypis(raw, { silentFail = false } = {}) {
-  const sig = vypisSig(raw);
-  if (sig && sig === _lastIngestSig) return { ok: true, duplicate: true };
-  const ctx = { ...pasteTargetFromDossier(), ..._pasteCtx };
-  const res = ingestVypis(raw, ctx);
-  if (!res.ok) {
-    if (!silentFail) {
-      setPasteVypisError(res.error);
-      showToast(res.error, 'error', { ms: 8000 });
-    }
-    return res;
-  }
-  _lastIngestSig = sig;
-  _awaitingVypis = false;
-  if (location.hash === '#vypis-recv') {
-    try { history.replaceState(null, '', `${location.pathname}${location.search}`); } catch (_) {}
-  }
-  setPasteVypisError('');
-  closePasteVypisModal();
-  closeGrabHelp();
-  try { window.focus(); } catch (_) {}
-  revealExtractPanel(res.ku, res.lv);
-  const name = ctx.name || ovSearch.pickName || '';
-  const b = personParcelBreakdown(res.parsed, name);
-  const who = name ? ` pre ${name}` : '';
-  if (b.onLv) {
-    showToast(`Výpis LV ${res.lv}: ${fmtM2(b.ichTotal)} z ${fmtM2(b.lvTotal)}${who}. k.ú. + LV sú v schránke.`, 'success', { ms: 8000 });
-  } else {
-    showToast(`Výpis LV ${res.lv}: ${fmtM2(b.lvTotal)} listu. Meno nie je aktuálny vlastník. k.ú. + LV sú v schránke.`, 'info', { ms: 9000 });
-  }
-  return res;
-}
-
-function applyPastedVypis(raw) {
-  return applyGrabbedVypis(raw);
-}
-
-async function loadVypisFromKataster(ctx = {}) {
-  const fallback = pasteTargetFromDossier();
-  _pasteCtx = {
-    lv: ctx.lv || fallback.lv,
-    ku: ctx.ku || fallback.ku,
-    kuName: ctx.kuName || fallback.kuName,
-    name: ctx.name || fallback.name || ovSearch.pickName || '',
-  };
-  const raw = await readClipboardVypis();
-  if (raw && looksLikeVypis(raw)) {
-    applyGrabbedVypis(raw);
-    return;
-  }
-  showToast(
-    'V schránke nie je výpis. Po captcha počkajte na výpis (rozšírenie), kliknite záložku, alebo skopírujte stránku.',
-    'info',
-    { ms: 12000, actionLabel: 'Vložiť ručne', onAction: () => openPasteVypisModal(_pasteCtx) },
-  );
-}
-window.loadVypisFromKataster = loadVypisFromKataster;
-
-function receiveVypisHtml(html, extra = {}, { silentFail = false } = {}) {
-  if (typeof html !== 'string' || html.length < 80 || html.length > 8_000_000) return { ok: false };
-  rememberVypisCtxFromMsg(extra);
-  if (!_bootReady) {
-    _pendingVypis.push({ html, extra, silentFail });
-    if (_pendingVypis.length === 1) {
-      showToast('Výpis prijatý. Spracujem ho po načítaní registra…', 'info', { ms: 6000 });
-    }
-    return { ok: true, pending: true };
-  }
-  if (!looksLikeVypis(html)) {
-    if (!silentFail) showToast('Správa z druhej karty nebola výpis z LV.', 'error');
-    return { ok: false };
-  }
-  return applyGrabbedVypis(html, { silentFail });
-}
-
-function flushPendingVypis() {
-  const queued = _pendingVypis.splice(0);
-  for (const item of queued) {
-    receiveVypisHtml(item.html, item.extra || {}, { silentFail: item.silentFail });
-  }
-}
-
-function onVypisMessage(e) {
-  if (e.origin === location.origin && e.data?.type === 'pzf-ext-ready') {
-    setExtReady();
-    return;
-  }
-  if (!allowedVypisMessageOrigin(e.origin)) return;
-  if (!isVypisMessage(e.data)) return;
-  receiveVypisHtml(e.data.html, e.data);
-}
-
-function ackVypisChannel() {
-  try { _vypisChannel?.postMessage({ type: 'pzf-vypis-ack' }); } catch (_) {}
-}
-
-function readVypisInbox() {
-  try {
-    const raw = localStorage.getItem(PZF_VYPIS_INBOX);
-    if (!raw) return null;
-    localStorage.removeItem(PZF_VYPIS_INBOX);
-    const obj = JSON.parse(raw);
-    if (obj && typeof obj.html === 'string') return obj;
-  } catch (_) {}
-  try {
-    const html = sessionStorage.getItem(PZF_VYPIS_INBOX);
-    if (html) {
-      sessionStorage.removeItem(PZF_VYPIS_INBOX);
-      return { html };
-    }
-  } catch (_) {}
-  return null;
-}
-
-function startVypisBridge() {
-  if (document.documentElement.dataset.pzfExt === '1') setExtReady();
-  const extId = document.documentElement.dataset.pzfExtId;
-  if (extId) {
-    try {
-      const rt = globalThis.chrome?.runtime;
-      rt?.sendMessage?.(extId, { type: 'pzf-hello' }, (res) => {
-        void rt.lastError;
-        if (res?.ok) setExtReady();
-      });
-    } catch (_) {}
-  }
-  try {
-    _vypisChannel = new BroadcastChannel(PZF_VYPIS_CHANNEL);
-    _vypisChannel.onmessage = (e) => {
-      const d = e.data;
-      if (!d || d.type !== PZF_VYPIS_MSG || typeof d.html !== 'string') return;
-      ackVypisChannel();
-      receiveVypisHtml(d.html, d);
-    };
-  } catch (_) {}
-  window.addEventListener('storage', (e) => {
-    if (e.key !== PZF_VYPIS_INBOX || !e.newValue) return;
-    try {
-      const obj = JSON.parse(e.newValue);
-      if (obj && typeof obj.html === 'string') {
-        try { localStorage.removeItem(PZF_VYPIS_INBOX); } catch (_) {}
-        receiveVypisHtml(obj.html, obj);
-      }
-    } catch (_) {}
-  });
-  const inbox = readVypisInbox();
-  if (inbox?.html) receiveVypisHtml(inbox.html, inbox, { silentFail: true });
-  if (location.hash === '#vypis-recv') {
-    _awaitingVypis = true;
-  }
-}
-
-function refreshExtUi() {
-  document.querySelectorAll('.lv-portal-hint').forEach((el) => {
-    el.outerHTML = lvPortalHintHtml();
-  });
-  document.querySelectorAll('.lv-extract[data-lv]').forEach((el) => {
-    if (!el.querySelector('.lv-extract-empty')) return;
-    el.innerHTML = extractPanelInner(el.dataset.lv, el.dataset.ku, ovSearch.pickName || '');
-  });
-  document.querySelectorAll('button.btn-ext-install, span.pzf-ext-on').forEach((el) => {
-    const extra = el.classList.contains('bulk-lv-btn') ? 'bulk-lv-btn' : '';
-    el.outerHTML = extInstallBtnHtml(extra);
-  });
-  bindBookmarkletLinks();
-}
-
-function setExtReady() {
-  if (_pzfExt) return;
-  _pzfExt = true;
-  document.documentElement.dataset.pzfExt = '1';
-  document.body?.classList.add('pzf-ext');
-  refreshExtUi();
-}
-
-startVypisBridge();
-
-function onPzfBecameVisible() {
-  if (!_awaitingVypis || document.hidden) return;
-  if (Date.now() - _vypisOpenedAt < 900) return;
-  clearTimeout(_vypisReturnTimer);
-  _vypisReturnTimer = setTimeout(async () => {
-    if (!_awaitingVypis || document.hidden) return;
-    const raw = await readClipboardVypis();
-    if (raw && looksLikeVypis(raw)) {
-      applyGrabbedVypis(raw, { silentFail: true });
-      return;
-    }
-    if (_vypisReturnHintShown) return;
-    _vypisReturnHintShown = true;
-    showToast(
-      pzfHasExt()
-        ? 'Ak výpis ešte neprišiel, na Katastri dokončite captcha. Schránka je záloha.'
-        : 'Ak je výpis v schránke, kliknite Načítať. Inak záložka na karte Katastra, alebo nainštalujte rozšírenie.',
-      'info',
-      {
-        ms: 12000,
-        actionLabel: pzfHasExt() ? 'Načítať zo schránky' : 'Ako načítať',
-        onAction: () => (pzfHasExt() ? loadVypisFromKataster({}) : openGrabHelp()),
-      },
-    );
-  }, 250);
-}
-
-window.addEventListener('message', onVypisMessage);
-window.addEventListener('focus', onPzfBecameVisible);
-document.addEventListener('visibilitychange', onPzfBecameVisible);
-
-function ensureGrabHelp() {
-  let el = document.getElementById('grab-help-modal');
-  if (el) return el;
-  el = document.createElement('div');
-  el.id = 'grab-help-modal';
-  el.hidden = true;
-  el.innerHTML = `
-    <div class="parcel-help-dialog" role="dialog" aria-modal="true" aria-labelledby="grab-help-title">
-      <div class="parcel-help-head">
-        <h2 id="grab-help-title">Ako načítať výpis</h2>
-        <button type="button" class="vypis-close" id="grab-help-close" aria-label="Zavrieť">×</button>
-      </div>
-      <div class="parcel-help-body">
-        <p>${captchaOneLiner()} Keď sa výpis načíta, rozšírenie (alebo záložka) ho odošle sem.</p>
-        <ol>
-          <li><strong>Rozšírenie (odporúčané, raz).</strong> Stiahnite
-            <a href="${EXT_ZIP_URL}" target="_blank" rel="noopener">ZIP z GitHubu</a>,
-            rozbaľte ho, v novej karte zadajte <code>chrome://extensions</code>,
-            zapnite <strong>Vývojársky režim</strong>, <strong>Načítať rozbalené</strong> a vyberte priečinok
-            <a href="${EXT_REPO_URL}" target="_blank" rel="noopener"><code>extension/</code></a>.
-            Potom: Výpis → captcha → PZF sa vyplní samo.</li>
-          <li><strong>Záložka</strong> (keď opener z Katastra nefunguje): presuňte ${bookmarkletLinkHtml()} do panela záložiek. Na karte Katastra po výpise na ňu kliknite — otvorí PZF a pošle HTML.</li>
-          <li><strong>Schránka:</strong> na Katastri Ctrl+A, Ctrl+C, v PZF <strong>Načítať z Katastra / zo schránky</strong>.</li>
-        </ol>
-        <button type="button" class="btn" id="grab-help-done">Zavrieť</button>
-      </div>
-    </div>`;
-  document.body.appendChild(el);
-  bindBookmarkletLinks(el);
-  const close = () => closeGrabHelp();
-  el.addEventListener('click', (e) => { if (e.target === el) close(); });
-  el.querySelector('#grab-help-close').addEventListener('click', close);
-  el.querySelector('#grab-help-done').addEventListener('click', close);
-  return el;
-}
-
-function openGrabHelp() {
-  const el = ensureGrabHelp();
-  bindBookmarkletLinks(el);
-  el.hidden = false;
-  document.body.classList.add('parcel-help-open');
-}
-function closeGrabHelp() {
-  const el = document.getElementById('grab-help-modal');
-  if (!el) return;
-  el.hidden = true;
-  if (!document.getElementById('parcel-help-modal') || document.getElementById('parcel-help-modal').hidden) {
-    document.body.classList.remove('parcel-help-open');
-  }
-}
-window.openGrabHelp = openGrabHelp;
-
-function openPasteVypisModal(ctx = {}) {
-  const fallback = pasteTargetFromDossier();
-  _pasteCtx = {
-    lv: ctx.lv || fallback.lv,
-    ku: ctx.ku || fallback.ku,
-    kuName: ctx.kuName || fallback.kuName,
-    name: ctx.name || fallback.name,
-  };
-  const el = ensurePasteVypisModal();
-  const sub = [];
-  if (_pasteCtx.kuName) sub.push(_pasteCtx.kuName);
-  if (_pasteCtx.ku) sub.push(`k.ú. ${_pasteCtx.ku}`);
-  if (_pasteCtx.lv) sub.push(`LV ${_pasteCtx.lv}`);
-  if (_pasteCtx.name) sub.push(_pasteCtx.name);
-  el.querySelector('#paste-vypis-sub').textContent = sub.join(' · ');
-  setPasteVypisError('');
-  const ta = el.querySelector('#paste-vypis-text');
-  ta.value = '';
-  el.hidden = false;
-  document.body.classList.add('paste-vypis-open');
-  bindBookmarkletLinks(el);
-}
-window.openPasteVypisModal = openPasteVypisModal;
-
-function closePasteVypisModal() {
-  const el = document.getElementById('paste-vypis-modal');
-  if (!el) return;
-  el.hidden = true;
-  document.body.classList.remove('paste-vypis-open');
-}
-
-async function tryLocalLvPreview(lvs) {
-  if (!shouldTryInPageVypis()) return;
-  for (const r of lvs || []) {
-    if (getLvExtract(r.cislo_ku || r.ku, r.lv)) continue;
-    const html = await loadVypisHtml(r.lv, r.cislo_ku || r.ku);
-    if (isLvVypisHtml(html) && looksLikeVypis(html)) {
-      ingestVypis(html, {
-        lv: r.lv,
-        ku: r.cislo_ku || r.ku,
-        kuName: r.ku_name || r.kuName || '',
-        name: ovSearch.pickName || '',
-        silent: true,
-      });
-    }
-  }
-}
-
-function openNewTab(url) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  a.click();
 }
 
 const ZBGIS_ZOOM_KU = 18;
@@ -1489,6 +720,8 @@ function openNamedWindow(url, name, { noopener = false } = {}) {
   return null;
 }
 
+const _vypisWindows = new Map();
+
 function openKatasterTab(url, name) {
   const w = window.open(url, name);
   if (w) {
@@ -1527,11 +760,7 @@ async function openZbgisMap({ lv, ku, kuName = '', district = '' } = {}) {
   }
   if (!loc) {
     if (pending) pending.close();
-    showToast('Neviem nájsť polohu k.ú. na ZBGIS mape.', 'error', {
-      ms: 9000,
-      actionLabel: 'Ako nájsť parcelu',
-      onAction: openParcelHelp,
-    });
+    showToast('Neviem nájsť polohu k.ú. na ZBGIS mape.', 'error');
     return;
   }
   track('zbgis', {
@@ -1553,11 +782,7 @@ async function openZbgisMap({ lv, ku, kuName = '', district = '' } = {}) {
     const why = loc.parcelAttempted
       ? 'geometriu parcely sa nepodarilo načítať'
       : 'parcely tohto LV nemáme — mapa je len na k.ú.';
-    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (${why})`, 'info', {
-      ms: 10000,
-      actionLabel: 'Ako nájsť parcelu',
-      onAction: openParcelHelp,
-    });
+    showToast(`ZBGIS mapa: približná poloha k.ú. ${loc.label} (${why})`, 'info');
   }
 }
 window.openZbgisMap = openZbgisMap;
@@ -1566,19 +791,13 @@ function lvLinksHtml(lv, ku, kuName, vypisLabel = 'Výpis') {
   const target = vypisWindowName(ku, lv);
   const place = kuName || ku || '';
   return `<span class="lv-row-actions">
-    <a class="btn-lv-link" target="${target}"
+    <a class="btn-lv-link" target="${target}" rel="noopener noreferrer"
        href="${katasterVypisUrl(lv, ku)}"
        data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
        title="Výpis z LV ${fmt(lv)} (${esc(place)})">${vypisLabel}</a>
-    <button type="button" class="btn-grab-vypis"
-      data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
-      title="Načítať výpis zo schránky (po skopírovaní na Katastri)">Načítať</button>
-    ${bookmarkletLinkHtml('btn-bookmarklet')}
-    ${extInstallBtnHtml()}
     <button type="button" class="btn-zbgis-link"
       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
       title="ZBGIS mapa — parcela LV ${esc(lv)} v k.ú. ${esc(place)}">ZBGIS mapa</button>
-    <button type="button" class="btn-parcel-help" title="Ako nájsť parcelu na Katastri a v MAPKE">Ako nájsť parcelu</button>
   </span>`;
 }
 
@@ -1647,8 +866,7 @@ function ensureVypisModal() {
         </div>
         <div class="vypis-head-actions">
           <button type="button" class="btn btn-ghost" id="vypis-zbgis">ZBGIS mapa ↗</button>
-          <button type="button" class="btn btn-ghost" id="vypis-help">Ako nájsť parcelu</button>
-          <a class="btn btn-ghost" id="vypis-ext" href="#">Otvoriť na Katastri ↗</a>
+          <a class="btn btn-ghost" id="vypis-ext" href="#" rel="noopener noreferrer">Otvoriť na Katastri ↗</a>
           <button type="button" class="vypis-close" id="vypis-close" aria-label="Zavrieť">×</button>
         </div>
       </div>
@@ -1656,9 +874,8 @@ function ensureVypisModal() {
         <div class="vypis-loading" id="vypis-loading">Načítavam výpis…</div>
         <iframe class="vypis-frame" id="vypis-frame" title="Výpis z listu vlastníctva" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" hidden></iframe>
         <div class="vypis-fallback" id="vypis-fallback" hidden>
-          <p>${captchaOneLiner()} Keď sa výpis načíta, rozšírenie ho odošle do PZF. Bez rozšírenia použite záložku alebo schránku.</p>
-          <a class="btn" id="vypis-fallback-link" href="#">Otvoriť výpis na Katastri</a>
-          <button type="button" class="btn btn-ghost" id="vypis-fallback-help">Ako nájsť parcelu</button>
+          <p>Výpis sa otvára na portáli Katastra.</p>
+          <a class="btn" id="vypis-fallback-link" href="#" rel="noopener noreferrer">Otvoriť výpis na Katastri</a>
         </div>
       </div>
     </div>`;
@@ -1675,8 +892,6 @@ function ensureVypisModal() {
       kuName: btn?.dataset.kuname || '',
     });
   });
-  el.querySelector('#vypis-fallback-help').addEventListener('click', openParcelHelp);
-  el.querySelector('#vypis-help').addEventListener('click', openParcelHelp);
   el.querySelector('#vypis-fallback-link').addEventListener('click', (e) => {
     e.preventDefault();
     const href = el.querySelector('#vypis-fallback-link')?.href;
@@ -1714,12 +929,7 @@ function closeVypisModal() {
 }
 
 function openOfficialVypis({ lv, ku, kuName = '', url } = {}) {
-  _lastVypis = { lv, ku, kuName };
-  _pasteCtx = { lv, ku, kuName, name: ovSearch.pickName || '' };
-  _awaitingVypis = true;
-  _vypisOpenedAt = Date.now();
-  _vypisReturnHintShown = false;
-  showCaptchaToast();
+  copyKuLvToClipboard(kuName, ku, lv);
   const name = vypisWindowName(ku, lv);
   const href = url || (ku && lv
     ? katasterVypisUrl(lv, ku)
@@ -1728,19 +938,52 @@ function openOfficialVypis({ lv, ku, kuName = '', url } = {}) {
 }
 
 async function openVypisModal({ lv, ku, kuName = '' } = {}) {
-  if (shouldTryInPageVypis() && lv && ku) {
-    const html = await loadVypisHtml(lv, ku);
-    if (isLvVypisHtml(html) && looksLikeVypis(html)) {
-      const res = ingestVypis(html, {
-        lv, ku, kuName, name: ovSearch.pickName || '', silent: true,
-      });
-      if (res.ok) {
-        showToast('Výpis načítaný z lokálneho API. Parcely sú pri mene v dosieri.', 'success');
-        return;
-      }
-    }
+  if (!lv || !ku) {
+    openOfficialVypis({ lv, ku, kuName });
+    return;
   }
-  openOfficialVypis({ lv, ku, kuName });
+  const url = katasterVypisUrl(lv, ku);
+  if (!shouldTryInPageVypis()) {
+    openOfficialVypis({ lv, ku, kuName });
+    return;
+  }
+  copyKuLvToClipboard(kuName, ku, lv);
+  const modal = ensureVypisModal();
+  modal.hidden = false;
+  document.body.classList.add('vypis-open');
+  document.getElementById('vypis-title').textContent = `Výpis LV ${lv}`;
+  document.getElementById('vypis-sub').textContent = kuName ? `${kuName} · k.ú. ${ku}` : `k.ú. ${ku}`;
+  const ext = document.getElementById('vypis-ext');
+  const fallbackLink = document.getElementById('vypis-fallback-link');
+  const zbgisBtn = document.getElementById('vypis-zbgis');
+  ext.href = url;
+  ext.target = vypisWindowName(ku, lv);
+  fallbackLink.href = url;
+  fallbackLink.target = vypisWindowName(ku, lv);
+  if (zbgisBtn) {
+    zbgisBtn.dataset.lv = String(lv);
+    zbgisBtn.dataset.ku = String(ku);
+    zbgisBtn.dataset.kuname = kuName || '';
+  }
+  const loading = document.getElementById('vypis-loading');
+  const frame = document.getElementById('vypis-frame');
+  const fallback = document.getElementById('vypis-fallback');
+  loading.hidden = false;
+  frame.hidden = true;
+  fallback.hidden = true;
+  frame.removeAttribute('srcdoc');
+  frame.removeAttribute('src');
+
+  const html = await loadVypisHtml(lv, ku);
+  if (isLvVypisHtml(html)) {
+    frame.srcdoc = sanitizeLvHtml(html);
+    frame.hidden = false;
+    loading.hidden = true;
+    return;
+  }
+  loading.hidden = true;
+  openOfficialVypis({ lv, ku, kuName, url });
+  closeVypisModal();
 }
 
 function openKatasterLV(kuName, kuCislo, lv) {
@@ -1759,65 +1002,11 @@ window.openKatasterLV = openKatasterLV;
 window.closeVypisModal = closeVypisModal;
 
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  const paste = document.getElementById('paste-vypis-modal');
-  if (paste && !paste.hidden) {
-    closePasteVypisModal();
-    return;
-  }
-  const grab = document.getElementById('grab-help-modal');
-  if (grab && !grab.hidden) {
-    closeGrabHelp();
-    return;
-  }
-  const help = document.getElementById('parcel-help-modal');
-  if (help && !help.hidden) {
-    closeParcelHelp();
-    return;
-  }
-  if (document.getElementById('vypis-modal') && !document.getElementById('vypis-modal').hidden) {
+  if (e.key === 'Escape' && document.getElementById('vypis-modal') && !document.getElementById('vypis-modal').hidden) {
     closeVypisModal();
   }
 });
 document.addEventListener('click', (e) => {
-  const bm = e.target.closest?.('a.pzf-bookmarklet');
-  if (bm) {
-    e.preventDefault();
-    openGrabHelp();
-    return;
-  }
-  if (e.target.closest?.('button.btn-ext-install')) {
-    e.preventDefault();
-    openGrabHelp();
-    return;
-  }
-  if (e.target.closest?.('button.btn-parcel-help, button.lv-portal-help-btn')) {
-    e.preventDefault();
-    openParcelHelp();
-    return;
-  }
-  const grabBtn = e.target.closest?.('button.btn-grab-vypis');
-  if (grabBtn) {
-    e.preventDefault();
-    loadVypisFromKataster({
-      lv: grabBtn.dataset.lv,
-      ku: grabBtn.dataset.ku,
-      kuName: grabBtn.dataset.kuname || '',
-      name: ovSearch.pickName || '',
-    });
-    return;
-  }
-  const pasteBtn = e.target.closest?.('button.btn-paste-vypis');
-  if (pasteBtn) {
-    e.preventDefault();
-    openPasteVypisModal({
-      lv: pasteBtn.dataset.lv,
-      ku: pasteBtn.dataset.ku,
-      kuName: pasteBtn.dataset.kuname || '',
-      name: ovSearch.pickName || '',
-    });
-    return;
-  }
   const z = e.target.closest?.('button.btn-zbgis-link');
   if (z) {
     e.preventDefault();
@@ -1836,6 +1025,14 @@ document.addEventListener('click', (e) => {
   const lv = a.dataset.lv || url.searchParams.get('prfNumber');
   const ku = a.dataset.ku || url.searchParams.get('cadastralUnitCode');
   if (!lv) return;
+  copyKuLvToClipboard(a.dataset.kuname || '', ku, lv);
+  track('kataster', {
+    name: ovSearch?.pickName || '',
+    ku: a.dataset.kuname || '',
+    ku_code: String(ku || ''),
+    lv,
+  });
+  if (!shouldTryInPageVypis()) return;
   e.preventDefault();
   openVypisModal({ lv, ku, kuName: a.dataset.kuname || '' });
 });
@@ -3237,10 +2434,8 @@ async function loadDossier(name, ku) {
   try {
     const data = await apiFetch(`/name-ku-detail?names=${namesParam(name)}&ku=${encodeURIComponent(ku)}`).then((r) => r.json());
     if (data.error) throw new Error(data.error);
-    rememberExtracts(data.extracts || {});
     renderDossier(data);
     renderCrumb();
-    tryLocalLvPreview(data.lvs || []).catch(() => {});
   } catch (e) {
     box.innerHTML = `<div class="empty-state" style="color:#ef4444">${esc(e.message)}</div>`;
   }
@@ -3313,11 +2508,6 @@ function renderDossier(data) {
                 <td class="cell-muted">${esc(r.variants || '—')}</td>
                 <td class="cell-muted">${esc(xferTxt)}</td>
                 <td>${lvLinksHtml(r.lv, r.cislo_ku, r.ku_name, 'Výpis')}</td>
-              </tr>
-              <tr class="lv-extract-row">
-                <td colspan="8">
-                  <div class="lv-extract" id="lv-extract-${esc(r.cislo_ku)}-${esc(r.lv)}" data-lv="${esc(r.lv)}" data-ku="${esc(r.cislo_ku)}">${extractPanelInner(r.lv, r.cislo_ku, s.name)}</div>
-                </td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -3334,8 +2524,8 @@ function renderDossier(data) {
         <span class="badge ${chance.cls}">Šanca ${chance.label}</span>
       </header>
       <p class="insight-note">
-        Odhad podielu v tabuľke je 1/N z registra nezistených — nie výmera z katastra.
-        Po načítaní výpisu sú pri každom LV parcely, podiel z ČASTI B a ich m² vs celok.
+        Odhad podielu je súčet 1/N na každom liste, kde N je počet neznámych z tohto registra — nie výmera z katastra.
+        Solo LV = na liste nie je iný neznámy; to je najlepší kandidát na väčší kus pôdy.
       </p>
       <div class="stat-grid ov-search-stats">
         <div class="stat-card"><div class="stat-label">LV v tomto k.ú.</div><div class="stat-value">${fmt(s.lvs)}</div></div>
@@ -3344,18 +2534,13 @@ function renderDossier(data) {
         <div class="stat-card"><div class="stat-label">Ø spoluvlastníkov</div><div class="stat-value">${s.avg_co ?? '—'}</div><div class="stat-sub">neznámych na LV</div></div>
       </div>
       <div class="bulk-lv-bar">
-        <div>Výpisy z Katastra pre toto meno v tomto k.ú.</div>
+        <div>Otvoriť výpisy z katastra pre toto meno v tomto k.ú.</div>
         <div class="dossier-actions">
           <button class="bulk-lv-btn" type="button" onclick="window.shareSearchLink()">Zdieľať</button>
-          ${extInstallBtnHtml('bulk-lv-btn')}
-          ${bookmarkletLinkHtml('bulk-lv-btn bulk-lv-btn-bookmarklet')}
-          <button class="bulk-lv-btn bulk-lv-btn-grab" type="button" onclick="window.loadVypisFromKataster({})">Načítať z Katastra / zo schránky</button>
-          <button class="bulk-lv-btn bulk-lv-btn-paste" type="button" onclick="window.openPasteVypisModal({})">Vložiť ručne</button>
           ${solo.length ? `<button class="bulk-lv-btn bulk-lv-btn-solo" type="button" onclick="window.openAllLvs(window._soloLvs)">Otvoriť ${solo.length} solo výpisov</button>` : ''}
           ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
       </div>
-      ${lvPortalHintHtml()}
       <h3 class="dossier-section">Solo LV — jediný neznámy vlastník</h3>
       <p class="insight-note">Na liste nie je iný neznámy z registra. Podiel 1.0 = celý neznámy nárok na tom LV.</p>
       <div class="table-wrap solo-lv-table">${lvRowsHtml(solo)}</div>
@@ -3396,7 +2581,6 @@ function renderDossier(data) {
         </table>`}
       </div>
     </div>`;
-  bindBookmarkletLinks(box);
 }
 
 window.dismissSourceBanner = dismissSourceBanner;
@@ -3504,9 +2688,7 @@ async function loadSoloLvs(page = 1) {
           PZF CSV nemá m². Výmeru berieme z Katastra cez Playwright (jednorazová captcha v okne).
           Filter k.ú. je povinný — bez neho je 491 500 listov. Príkaz:
           <code id="solo-fetch-cmd">${esc(fetchCmd)}</code>
-        </p>
-        ${lvPortalHintHtml()}` : '';
-      bindBookmarkletLinks(bulk);
+        </p>` : '';
     }
     if (!data.rows.length) {
       wrap.innerHTML = `<div class="empty-state">Žiadne solo LV${soloState.ku ? ` pre k.ú. „${esc(soloState.ku)}“` : ''}.</div>`;
@@ -3709,24 +2891,10 @@ function openAllLvs(lvs) {
     ku: ovSearch.pickKu,
     count: lvs.length,
   });
-  showToast(
-    pzfHasExt()
-      ? `Otváram ${lvs.length} výpisov na Katastri. Na každom zaškrtnite „Nie som robot“ (ÚGKK). Výpisy prídu do PZF samy.`
-      : `Otváram ${lvs.length} výpisov na Katastri. Na každom „Nie som robot“ (ÚGKK). Potom záložka „PZF: načítať výpis“, alebo nainštalujte rozšírenie.`,
-    'info',
-    {
-      ms: 14000,
-      actionLabel: pzfHasExt() ? 'Načítať zo schránky' : 'Ako načítať',
-      onAction: () => (pzfHasExt() ? loadVypisFromKataster({}) : openGrabHelp()),
-    },
-  );
+  showToast(`Otváram ${lvs.length} unikátnych výpisov z Katastra...`, 'success');
   lvs.forEach((item, i) => {
     setTimeout(() => {
-      _lastVypis = { lv: item.lv, ku: item.ku, kuName: item.kuName || '' };
-      _pasteCtx = { ..._lastVypis, name: ovSearch.pickName || '' };
-      _awaitingVypis = true;
-      _vypisOpenedAt = Date.now();
-      _vypisReturnHintShown = false;
+      copyKuLvToClipboard(item.kuName || '', item.ku, item.lv);
       openKatasterTab(katasterVypisUrl(item.lv, item.ku), vypisWindowName(item.ku, item.lv));
     }, i * 150);
   });
@@ -5575,11 +4743,6 @@ window.toggleTheme = toggleTheme;
 async function boot() {
   try {
     await initDb();
-    loadExtractStore();
-    _bootReady = true;
-    flushPendingVypis();
-    bindBookmarkletLinks();
-    hydrateExtractsIntoDb().catch(() => {});
     showSourceBannerIfNeeded();
     loadKuCentroidIndex().catch(() => {});
     const sharedQ = searchQueryFromUrl();
