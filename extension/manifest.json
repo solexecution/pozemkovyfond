@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "PZF výpis",
+  "version": "1.0.0",
+  "description": "Po captcha na Katastri odošle HTML výpisu do PZF Explorer. Captcha nerieši — „Nie som robot“ musíte zaškrtnúť vy.",
+  "permissions": [],
+  "host_permissions": [
+    "https://kataster.skgeodesy.sk/*",
+    "https://solexecution.github.io/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://solexecution.github.io/*",
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://kataster.skgeodesy.sk/*"
+      ],
+      "js": ["content-kataster.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://solexecution.github.io/*",
+        "http://localhost/*",
+        "http://localhost:*/*",
+        "http://127.0.0.1/*",
+        "http://127.0.0.1:*/*"
+      ],
+      "js": ["content-pzf.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

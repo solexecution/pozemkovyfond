@@ -851,6 +851,55 @@ a.pzf-bookmarklet:hover {
 }
 a.pzf-bookmarklet:active { cursor: grabbing; }
 
+.btn-ext-install {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  color: #6ee7b7;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn-ext-install:hover {
+  background: rgba(16, 185, 129, 0.3);
+  border-color: #34d399;
+  color: #fff;
+  transform: translateY(-1px);
+}
+.pzf-ext-on {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.lv-portal-hint .btn-ext-install,
+.lv-extract-empty .btn-ext-install,
+.parcel-help-body .btn-ext-install,
+.lv-portal-hint .pzf-ext-on,
+.lv-extract-empty .pzf-ext-on {
+  margin: 0 0.15rem;
+  vertical-align: middle;
+}
+.parcel-help-body code {
+  font-size: 0.84em;
+  color: var(--text-primary);
+}
+.parcel-help-body a { color: var(--blue); }
+
 .lv-row-actions {
   display: inline-flex;
   align-items: center;
@@ -1443,6 +1492,11 @@ html[data-theme="light"] a.pzf-bookmarklet {
   color: #6b21a8;
   background: rgba(168, 85, 247, 0.1);
 }
+html[data-theme="light"] .btn-ext-install,
+html[data-theme="light"] .pzf-ext-on {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+}
 html[data-theme="light"] .btn-zbgis-link {
   color: #047857;
   background: rgba(16, 185, 129, 0.12);
@@ -1834,6 +1888,15 @@ a.bulk-lv-btn-bookmarklet {
   border: 1px dashed rgba(255, 255, 255, 0.35);
   color: #fff;
   cursor: grab;
+}
+button.btn-ext-install.bulk-lv-btn {
+  background: linear-gradient(135deg, #059669, #047857);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+span.pzf-ext-on.bulk-lv-btn {
+  background: rgba(16, 185, 129, 0.18);
+  cursor: default;
 }
 .cell-muted {
   max-width: 220px;

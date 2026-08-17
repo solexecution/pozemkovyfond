@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="sk" data-pzf="1">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="pzf-app" content="1">
+  <title>PZF — príjem výpisu</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font: 16px/1.45 system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    main { max-width: 28rem; padding: 1.5rem; text-align: center; }
+    p { margin: 0 0 0.75rem; color: #94a3b8; }
+    strong { color: #f8fafc; }
+  </style>
+</head>
+<body>
+  <main>
+    <p id="msg">Čakám na výpis z Katastra…</p>
+  </main>
+  <script>
+    (function () {
+      var KATASTER = 'https://kataster.skgeodesy.sk';
+      var CHANNEL = 'pzf-vypis';
+      var INBOX = 'pzf-vypis-inbox';
+      var msgEl = document.getElementById('msg');
+      var handled = false;
+
+      function appIndexUrl() {
+        try {
+          return new URL('.', location.href).href;
+        } catch (e) {
+          return location.origin + '/';
+        }
+      }
+
+      function looksLikeVypis(html) {
+        if (!html || html.length < 80) return false;
+        return /VÝPIS Z LISTU VLASTNÍCTVA|MAJETKOVÁ PODSTATA|Parcely registra|ČASŤ B:\s*VLASTNÍCI/i.test(html);
+      }
+
+      function allowed(origin) {
+        return origin === KATASTER || origin === location.origin;
+      }
+
+      function goHome() {
+        location.replace(appIndexUrl());
+      }
+
+      function forward(html, meta) {
+        if (handled) return;
+        if (!looksLikeVypis(html)) {
+          msgEl.textContent = 'Správa nebola výpis z LV.';
+          return;
+        }
+        handled = true;
+        msgEl.innerHTML = 'Výpis odosielam do <strong>PZF Explorer</strong>…';
+        var payload = { type: 'pzf-vypis', html: html, lv: meta.lv || '', ku: meta.ku || '' };
+        var acked = false;
+        var ch = null;
+        try {
+          ch = new BroadcastChannel(CHANNEL);
+          ch.onmessage = function (e) {
+            if (e.data && e.data.type === 'pzf-vypis-ack') acked = true;
+          };
+          ch.postMessage(payload);
+        } catch (e) {}
+        try {
+          localStorage.setItem(INBOX, JSON.stringify({
+            html: html, lv: payload.lv, ku: payload.ku, t: Date.now()
+          }));
+        } catch (e) {}
+        setTimeout(function () {
+          if (ch) try { ch.close(); } catch (e) {}
+          if (acked) {
+            msgEl.textContent = 'Výpis je v PZF. Toto okno môžete zavrieť.';
+            setTimeout(function () { try { window.close(); } catch (e) {} }, 700);
+            return;
+          }
+          try { sessionStorage.setItem(INBOX, payload.html); } catch (e) {}
+          goHome();
+        }, 500);
+      }
+
+      window.addEventListener('message', function (e) {
+        if (!allowed(e.origin)) return;
+        var d = e.data;
+        if (!d || typeof d !== 'object') return;
+        if (d.type !== 'pzf-vypis' && d.type !== 'pzf-vyptis') return;
+        if (typeof d.html !== 'string') return;
+        forward(d.html, d);
+      });
+    })();
+  </script>
+</body>
+</html>

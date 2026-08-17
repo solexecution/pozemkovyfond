@@ -319,12 +319,21 @@ function vypisWindowName(ku, lv) {
 if (!window.name) window.name = 'pzf-main';
 
 const PZF_VYPIS_MSG = 'pzf-vypis';
+const PZF_VYPIS_CHANNEL = 'pzf-vypis';
+const PZF_VYPIS_INBOX = 'pzf-vypis-inbox';
 const KATASTER_ORIGIN = 'https://kataster.skgeodesy.sk';
+const EXT_REPO_URL = 'https://github.com/solexecution/pozemkovyfond/tree/main/extension';
+const EXT_ZIP_URL = 'https://github.com/solexecution/pozemkovyfond/archive/refs/heads/main.zip';
 const _vypisWindows = new Map();
 let _awaitingVypis = false;
 let _vypisOpenedAt = 0;
 let _vypisReturnHintShown = false;
 let _vypisReturnTimer = 0;
+let _pzfExt = false;
+let _bootReady = false;
+let _pendingVypis = [];
+let _lastIngestSig = '';
+let _vypisChannel = null;
 
 function copyKuLvToClipboard(kuName, ku, lv) {
   const kuText = String(kuName || '').trim();
@@ -334,9 +343,29 @@ function copyKuLvToClipboard(kuName, ku, lv) {
   } catch (_) {}
 }
 
+function pzfAppBaseUrl() {
+  const u = new URL(location.href);
+  u.hash = '';
+  u.search = '';
+  let path = u.pathname || '/';
+  if (!path.endsWith('/')) path = path.replace(/[^/]+$/, '') || '/';
+  u.pathname = path;
+  return u.href;
+}
+
+function pzfRecvUrl() {
+  return new URL('vypis-recv.html', pzfAppBaseUrl()).href;
+}
+
+function pzfHasExt() {
+  return _pzfExt || document.documentElement.dataset.pzfExt === '1';
+}
+
 function pzfBookmarkletCode() {
   const origin = JSON.stringify(location.origin);
-  return `(function(){var h=document.documentElement.outerHTML,m={type:${JSON.stringify(PZF_VYPIS_MSG)},html:h};if(window.opener&&!window.opener.closed){window.opener.postMessage(m,${origin});try{window.opener.focus()}catch(e){}}else{try{window.postMessage(m,"*")}catch(e){}try{navigator.clipboard.writeText(h)}catch(e){}}})();`;
+  const recv = JSON.stringify(pzfRecvUrl());
+  const type = JSON.stringify(PZF_VYPIS_MSG);
+  return `(function(){var h=document.documentElement.outerHTML,m={type:${type},html:h},o=${origin},r=${recv},w=null;try{w=window.open(r,"pzf-vypis-recv")}catch(e){}function s(){if(w&&!w.closed){try{w.postMessage(m,o)}catch(e){}}if(window.opener&&!window.opener.closed){try{window.opener.postMessage(m,o)}catch(e){}}}if(!w){try{navigator.clipboard.writeText(h)}catch(e){}}s();setTimeout(s,400);setTimeout(s,1200);setTimeout(s,2500);try{w&&w.focus()}catch(e){}})();`;
 }
 
 function pzfBookmarkletHref() {
@@ -356,19 +385,49 @@ function bookmarkletLinkHtml(extraClass = '') {
   return `<a class="${cls}" href="#" draggable="true" title="Presuňte do panela záložiek. Na karte Katastra po captcha kliknite.">PZF: načítať výpis</a>`;
 }
 
+function extInstallBtnHtml(extraClass = '') {
+  if (pzfHasExt()) {
+    return `<span class="pzf-ext-on${extraClass ? ` ${extraClass}` : ''}">Rozšírenie aktívne</span>`;
+  }
+  return `<button type="button" class="btn-ext-install${extraClass ? ` ${extraClass}` : ''}" title="Inštalácia v chrome://extensions — Načítať rozbalené → priečinok extension/">Nainštalovať rozšírenie</button>`;
+}
+
+function captchaOneLiner() {
+  return '„Nie som robot“ musíte zaškrtnúť vy — to je Kataster (ÚGKK), nie my. Captcha za vás neurobíme.';
+}
+
 function showCaptchaToast() {
+  if (pzfHasExt()) {
+    showToast(
+      `${captchaOneLiner()} Keď sa výpis načíta, PZF ho vezme samo.`,
+      'info',
+      { ms: 14000 },
+    );
+    return;
+  }
   showToast(
-    'To „Nie som robot“ je Kataster (ÚGKK), nie my. Po výpise na tej karte kliknite záložku „PZF: načítať výpis“.',
+    `${captchaOneLiner()} Potom záložka „PZF: načítať výpis“, alebo nainštalujte rozšírenie (raz).`,
     'info',
-    { ms: 14000, actionLabel: 'Načítať z Katastra', onAction: () => loadVypisFromKataster({}) },
+    {
+      ms: 16000,
+      actionLabel: 'Ako načítať',
+      onAction: () => openGrabHelp(),
+    },
   );
 }
 
 function lvPortalHintHtml() {
+  if (pzfHasExt()) {
+    return `<p class="lv-portal-hint">
+      <strong>Výpis</strong> otvorí Kataster. ${captchaOneLiner()}
+      Po načítaní výpisu ho rozšírenie odošle sem samo.
+      <button type="button" class="lv-portal-help-btn">Ako nájsť parcelu</button>
+    </p>`;
+  }
   return `<p class="lv-portal-hint">
-    <strong>Výpis</strong> otvorí Kataster (ÚGKK) — „Nie som robot“ nie sme my.
-    Po výpise na tej karte kliknite záložku ${bookmarkletLinkHtml()}.
-    Alebo skopírujte stránku a v PZF dajte <strong>Načítať z Katastra / zo schránky</strong>.
+    <strong>Výpis</strong> otvorí Kataster. ${captchaOneLiner()}
+    Najlepšie: ${extInstallBtnHtml()} (raz) — potom sa výpis načíta sám.
+    Záložka ${bookmarkletLinkHtml()} je záloha. Schránka ako posledná možnosť.
     <button type="button" class="lv-portal-help-btn">Ako nájsť parcelu</button>
   </p>`;
 }
@@ -388,7 +447,7 @@ function ensureParcelHelpModal() {
       <div class="parcel-help-body">
         <p>Nové hľadania často nemajú čísla parciel u nás. ZBGIS preto neskočí na pozemok. Treba to z Katastra.</p>
         <ol>
-          <li><strong>Výpis.</strong> Otvorí sa Kataster (ÚGKK). Zaškrtnite „Nie som robot“ — to nie sme my. Presuňte ${bookmarkletLinkHtml()} do záložiek a na karte Katastra na ňu kliknite — výpis príde do PZF. Schránku pred tým necháme voľnú.</li>
+          <li><strong>Výpis.</strong> Otvorí sa Kataster (ÚGKK). ${captchaOneLiner()} S rozšírením príde výpis do PZF sám. Inak záložka ${bookmarkletLinkHtml()}. Schránku pri otvorení necháme voľnú.</li>
           <li><strong>ČASŤ A: MAJETKOVÁ PODSTATA.</strong> Tam sú parcely registra C a E. Zoberte číslo parcely.</li>
           <li><strong>MAPKA</strong> (téma Kataster nehnuteľností). Do poľa <strong>Vyhľadávanie</strong> zadajte obec alebo k.ú. a stlačte <strong>zámok</strong> (hľadať len v tom území). Potom zadajte <strong>číslo parcely</strong> alebo <strong>číslo LV</strong> a kliknite na výsledok.</li>
           <li>Alebo v mape otvorte <strong>Informácie z mapy</strong> a kliknite na pozemok.</li>
@@ -510,7 +569,7 @@ async function hydrateExtractsIntoDb() {
 
 function ingestVypis(raw, ctx = {}) {
   if (!looksLikeVypis(raw)) {
-    return { ok: false, error: 'Toto nevyzerá ako výpis z LV. Na karte Katastra kliknite záložku „PZF: načítať výpis“, alebo skopírujte stránku.' };
+    return { ok: false, error: 'Toto nevyzerá ako výpis z LV. Po captcha počkajte na výpis — rozšírenie ho odošle, alebo kliknite záložku „PZF: načítať výpis“.' };
   }
   const parsed = parseVypisInput(raw, ctx.lv || 0, ctx.ku || 0);
   if (!parsed.parcels?.length && !parsed.owners?.length) {
@@ -530,7 +589,7 @@ function ingestVypis(raw, ctx = {}) {
 function extractPanelInner(lv, ku, searchName) {
   const parsed = getLvExtract(ku, lv);
   if (!parsed) {
-    return `<p class="lv-extract-empty">Výmera z katastra zatiaľ nie je. Otvorte <strong>Výpis</strong>, po captcha na karte Katastra kliknite ${bookmarkletLinkHtml()}. Alebo skopírujte stránku a dajte <strong>Načítať z Katastra / zo schránky</strong>.</p>`;
+    return `<p class="lv-extract-empty">Výmera z katastra zatiaľ nie je. Otvorte <strong>Výpis</strong>. ${captchaOneLiner()} ${pzfHasExt() ? 'Potom to PZF načíta samo.' : `Najlepšie ${extInstallBtnHtml()}. Záložka ${bookmarkletLinkHtml()}, alebo <strong>Načítať z Katastra / zo schránky</strong>.`}</p>`;
   }
   const b = personParcelBreakdown(parsed, searchName || '');
   const ownerLine = b.onLv
@@ -618,8 +677,9 @@ function ensurePasteVypisModal() {
       </div>
       <div class="paste-vypis-body">
         <p class="paste-vypis-hint">
-          Na karte Katastra po captcha kliknite záložku ${bookmarkletLinkHtml()}.
-          Ak ste stránku skopírovali, stačí tlačidlo nižšie — bez poľa na vloženie.
+          ${captchaOneLiner()}
+          ${pzfHasExt() ? 'S rozšírením príde výpis sám.' : `Záložka ${bookmarkletLinkHtml()} otvorí PZF a pošle HTML aj keď opener nefunguje.`}
+          Schránka je posledná možnosť.
         </p>
         <div class="paste-vypis-actions">
           <button type="button" class="btn" id="paste-vypis-clip">Načítať z Katastra / zo schránky</button>
@@ -670,6 +730,25 @@ function isVypisMessage(data) {
   return typeof data.html === 'string';
 }
 
+function rememberVypisCtxFromMsg(data) {
+  const lv = data?.lv;
+  const ku = data?.ku;
+  if (!lv && !ku) return;
+  if (lv) {
+    _pasteCtx = { ..._pasteCtx, lv };
+    _lastVypis = { ..._lastVypis, lv };
+  }
+  if (ku) {
+    _pasteCtx = { ..._pasteCtx, ku };
+    _lastVypis = { ..._lastVypis, ku };
+  }
+}
+
+function vypisSig(raw) {
+  const s = String(raw || '');
+  return `${s.length}:${s.slice(120, 280)}`;
+}
+
 function revealExtractPanel(ku, lv) {
   const el = document.querySelector(`.lv-extract[data-lv="${CSS.escape(String(lv || ''))}"][data-ku="${CSS.escape(String(ku || ''))}"]`);
   el?.closest('.lv-extract-row')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -696,6 +775,8 @@ async function readClipboardVypis() {
 }
 
 function applyGrabbedVypis(raw, { silentFail = false } = {}) {
+  const sig = vypisSig(raw);
+  if (sig && sig === _lastIngestSig) return { ok: true, duplicate: true };
   const ctx = { ...pasteTargetFromDossier(), ..._pasteCtx };
   const res = ingestVypis(raw, ctx);
   if (!res.ok) {
@@ -705,7 +786,11 @@ function applyGrabbedVypis(raw, { silentFail = false } = {}) {
     }
     return res;
   }
+  _lastIngestSig = sig;
   _awaitingVypis = false;
+  if (location.hash === '#vypis-recv') {
+    try { history.replaceState(null, '', `${location.pathname}${location.search}`); } catch (_) {}
+  }
   setPasteVypisError('');
   closePasteVypisModal();
   closeGrabHelp();
@@ -740,24 +825,131 @@ async function loadVypisFromKataster(ctx = {}) {
     return;
   }
   showToast(
-    'V schránke nie je výpis. Na karte Katastra kliknite záložku „PZF: načítať výpis“, alebo skopírujte stránku a skúste znova.',
+    'V schránke nie je výpis. Po captcha počkajte na výpis (rozšírenie), kliknite záložku, alebo skopírujte stránku.',
     'info',
     { ms: 12000, actionLabel: 'Vložiť ručne', onAction: () => openPasteVypisModal(_pasteCtx) },
   );
 }
 window.loadVypisFromKataster = loadVypisFromKataster;
 
-function onVypisMessage(e) {
-  if (!allowedVypisMessageOrigin(e.origin)) return;
-  if (!isVypisMessage(e.data)) return;
-  const html = e.data.html;
-  if (html.length < 80 || html.length > 8_000_000) return;
+function receiveVypisHtml(html, extra = {}, { silentFail = false } = {}) {
+  if (typeof html !== 'string' || html.length < 80 || html.length > 8_000_000) return { ok: false };
+  rememberVypisCtxFromMsg(extra);
+  if (!_bootReady) {
+    _pendingVypis.push({ html, extra, silentFail });
+    if (_pendingVypis.length === 1) {
+      showToast('Výpis prijatý. Spracujem ho po načítaní registra…', 'info', { ms: 6000 });
+    }
+    return { ok: true, pending: true };
+  }
   if (!looksLikeVypis(html)) {
-    showToast('Správa z druhej karty nebola výpis z LV.', 'error');
+    if (!silentFail) showToast('Správa z druhej karty nebola výpis z LV.', 'error');
+    return { ok: false };
+  }
+  return applyGrabbedVypis(html, { silentFail });
+}
+
+function flushPendingVypis() {
+  const queued = _pendingVypis.splice(0);
+  for (const item of queued) {
+    receiveVypisHtml(item.html, item.extra || {}, { silentFail: item.silentFail });
+  }
+}
+
+function onVypisMessage(e) {
+  if (e.origin === location.origin && e.data?.type === 'pzf-ext-ready') {
+    setExtReady();
     return;
   }
-  applyGrabbedVypis(html);
+  if (!allowedVypisMessageOrigin(e.origin)) return;
+  if (!isVypisMessage(e.data)) return;
+  receiveVypisHtml(e.data.html, e.data);
 }
+
+function ackVypisChannel() {
+  try { _vypisChannel?.postMessage({ type: 'pzf-vypis-ack' }); } catch (_) {}
+}
+
+function readVypisInbox() {
+  try {
+    const raw = localStorage.getItem(PZF_VYPIS_INBOX);
+    if (!raw) return null;
+    localStorage.removeItem(PZF_VYPIS_INBOX);
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj.html === 'string') return obj;
+  } catch (_) {}
+  try {
+    const html = sessionStorage.getItem(PZF_VYPIS_INBOX);
+    if (html) {
+      sessionStorage.removeItem(PZF_VYPIS_INBOX);
+      return { html };
+    }
+  } catch (_) {}
+  return null;
+}
+
+function startVypisBridge() {
+  if (document.documentElement.dataset.pzfExt === '1') setExtReady();
+  const extId = document.documentElement.dataset.pzfExtId;
+  if (extId) {
+    try {
+      const rt = globalThis.chrome?.runtime;
+      rt?.sendMessage?.(extId, { type: 'pzf-hello' }, (res) => {
+        void rt.lastError;
+        if (res?.ok) setExtReady();
+      });
+    } catch (_) {}
+  }
+  try {
+    _vypisChannel = new BroadcastChannel(PZF_VYPIS_CHANNEL);
+    _vypisChannel.onmessage = (e) => {
+      const d = e.data;
+      if (!d || d.type !== PZF_VYPIS_MSG || typeof d.html !== 'string') return;
+      ackVypisChannel();
+      receiveVypisHtml(d.html, d);
+    };
+  } catch (_) {}
+  window.addEventListener('storage', (e) => {
+    if (e.key !== PZF_VYPIS_INBOX || !e.newValue) return;
+    try {
+      const obj = JSON.parse(e.newValue);
+      if (obj && typeof obj.html === 'string') {
+        try { localStorage.removeItem(PZF_VYPIS_INBOX); } catch (_) {}
+        receiveVypisHtml(obj.html, obj);
+      }
+    } catch (_) {}
+  });
+  const inbox = readVypisInbox();
+  if (inbox?.html) receiveVypisHtml(inbox.html, inbox, { silentFail: true });
+  if (location.hash === '#vypis-recv') {
+    _awaitingVypis = true;
+  }
+}
+
+function refreshExtUi() {
+  document.querySelectorAll('.lv-portal-hint').forEach((el) => {
+    el.outerHTML = lvPortalHintHtml();
+  });
+  document.querySelectorAll('.lv-extract[data-lv]').forEach((el) => {
+    if (!el.querySelector('.lv-extract-empty')) return;
+    el.innerHTML = extractPanelInner(el.dataset.lv, el.dataset.ku, ovSearch.pickName || '');
+  });
+  document.querySelectorAll('button.btn-ext-install, span.pzf-ext-on').forEach((el) => {
+    const extra = el.classList.contains('bulk-lv-btn') ? 'bulk-lv-btn' : '';
+    el.outerHTML = extInstallBtnHtml(extra);
+  });
+  bindBookmarkletLinks();
+}
+
+function setExtReady() {
+  if (_pzfExt) return;
+  _pzfExt = true;
+  document.documentElement.dataset.pzfExt = '1';
+  document.body?.classList.add('pzf-ext');
+  refreshExtUi();
+}
+
+startVypisBridge();
 
 function onPzfBecameVisible() {
   if (!_awaitingVypis || document.hidden) return;
@@ -773,9 +965,15 @@ function onPzfBecameVisible() {
     if (_vypisReturnHintShown) return;
     _vypisReturnHintShown = true;
     showToast(
-      'Ak je výpis v schránke, kliknite Načítať z Katastra. Inak na karte Katastra záložka „PZF: načítať výpis“.',
+      pzfHasExt()
+        ? 'Ak výpis ešte neprišiel, na Katastri dokončite captcha. Schránka je záloha.'
+        : 'Ak je výpis v schránke, kliknite Načítať. Inak záložka na karte Katastra, alebo nainštalujte rozšírenie.',
       'info',
-      { ms: 12000, actionLabel: 'Načítať z Katastra', onAction: () => loadVypisFromKataster({}) },
+      {
+        ms: 12000,
+        actionLabel: pzfHasExt() ? 'Načítať zo schránky' : 'Ako načítať',
+        onAction: () => (pzfHasExt() ? loadVypisFromKataster({}) : openGrabHelp()),
+      },
     );
   }, 250);
 }
@@ -793,17 +991,21 @@ function ensureGrabHelp() {
   el.innerHTML = `
     <div class="parcel-help-dialog" role="dialog" aria-modal="true" aria-labelledby="grab-help-title">
       <div class="parcel-help-head">
-        <h2 id="grab-help-title">PZF: načítať výpis</h2>
+        <h2 id="grab-help-title">Ako načítať výpis</h2>
         <button type="button" class="vypis-close" id="grab-help-close" aria-label="Zavrieť">×</button>
       </div>
       <div class="parcel-help-body">
-        <p>Prehliadač nedovolí PZF ticho prečítať kartu Katastra (iný server, captcha). Záložka beží <em>na tej karte</em> a pošle HTML sem.</p>
+        <p>${captchaOneLiner()} Keď sa výpis načíta, rozšírenie (alebo záložka) ho odošle sem.</p>
         <ol>
-          <li>Presuňte ${bookmarkletLinkHtml()} do panela záložiek (raz).</li>
-          <li>V PZF otvorte <strong>Výpis</strong>. Zaškrtnite „Nie som robot“ na Katastri.</li>
-          <li>Na karte Katastra kliknite záložku. Tu sa ukážu parcely a ich m² vs celok.</li>
+          <li><strong>Rozšírenie (odporúčané, raz).</strong> Stiahnite
+            <a href="${EXT_ZIP_URL}" target="_blank" rel="noopener">ZIP z GitHubu</a>,
+            rozbaľte ho, v novej karte zadajte <code>chrome://extensions</code>,
+            zapnite <strong>Vývojársky režim</strong>, <strong>Načítať rozbalené</strong> a vyberte priečinok
+            <a href="${EXT_REPO_URL}" target="_blank" rel="noopener"><code>extension/</code></a>.
+            Potom: Výpis → captcha → PZF sa vyplní samo.</li>
+          <li><strong>Záložka</strong> (keď opener z Katastra nefunguje): presuňte ${bookmarkletLinkHtml()} do panela záložiek. Na karte Katastra po výpise na ňu kliknite — otvorí PZF a pošle HTML.</li>
+          <li><strong>Schránka:</strong> na Katastri Ctrl+A, Ctrl+C, v PZF <strong>Načítať z Katastra / zo schránky</strong>.</li>
         </ol>
-        <p class="insight-note">Bez záložky: na Katastri Ctrl+A, Ctrl+C, v PZF <strong>Načítať z Katastra / zo schránky</strong>.</p>
         <button type="button" class="btn" id="grab-help-done">Zavrieť</button>
       </div>
     </div>`;
@@ -1372,6 +1574,7 @@ function lvLinksHtml(lv, ku, kuName, vypisLabel = 'Výpis') {
       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
       title="Načítať výpis zo schránky (po skopírovaní na Katastri)">Načítať</button>
     ${bookmarkletLinkHtml('btn-bookmarklet')}
+    ${extInstallBtnHtml()}
     <button type="button" class="btn-zbgis-link"
       data-lv="${esc(lv)}" data-ku="${esc(ku)}" data-kuname="${esc(kuName || '')}"
       title="ZBGIS mapa — parcela LV ${esc(lv)} v k.ú. ${esc(place)}">ZBGIS mapa</button>
@@ -1453,7 +1656,7 @@ function ensureVypisModal() {
         <div class="vypis-loading" id="vypis-loading">Načítavam výpis…</div>
         <iframe class="vypis-frame" id="vypis-frame" title="Výpis z listu vlastníctva" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" hidden></iframe>
         <div class="vypis-fallback" id="vypis-fallback" hidden>
-          <p>Výpis ide na Kataster (ÚGKK). Tam je „Nie som robot“ — to nie sme my. Zaškrtnite checkbox, výpis sa načíta.</p>
+          <p>${captchaOneLiner()} Keď sa výpis načíta, rozšírenie ho odošle do PZF. Bez rozšírenia použite záložku alebo schránku.</p>
           <a class="btn" id="vypis-fallback-link" href="#">Otvoriť výpis na Katastri</a>
           <button type="button" class="btn btn-ghost" id="vypis-fallback-help">Ako nájsť parcelu</button>
         </div>
@@ -1579,6 +1782,11 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('click', (e) => {
   const bm = e.target.closest?.('a.pzf-bookmarklet');
   if (bm) {
+    e.preventDefault();
+    openGrabHelp();
+    return;
+  }
+  if (e.target.closest?.('button.btn-ext-install')) {
     e.preventDefault();
     openGrabHelp();
     return;
@@ -3139,6 +3347,7 @@ function renderDossier(data) {
         <div>Výpisy z Katastra pre toto meno v tomto k.ú.</div>
         <div class="dossier-actions">
           <button class="bulk-lv-btn" type="button" onclick="window.shareSearchLink()">Zdieľať</button>
+          ${extInstallBtnHtml('bulk-lv-btn')}
           ${bookmarkletLinkHtml('bulk-lv-btn bulk-lv-btn-bookmarklet')}
           <button class="bulk-lv-btn bulk-lv-btn-grab" type="button" onclick="window.loadVypisFromKataster({})">Načítať z Katastra / zo schránky</button>
           <button class="bulk-lv-btn bulk-lv-btn-paste" type="button" onclick="window.openPasteVypisModal({})">Vložiť ručne</button>
@@ -3501,9 +3710,15 @@ function openAllLvs(lvs) {
     count: lvs.length,
   });
   showToast(
-    `Otváram ${lvs.length} výpisov na Katastri. Na každom „Nie som robot“ (ÚGKK). Potom na karte kliknite záložku „PZF: načítať výpis“.`,
+    pzfHasExt()
+      ? `Otváram ${lvs.length} výpisov na Katastri. Na každom zaškrtnite „Nie som robot“ (ÚGKK). Výpisy prídu do PZF samy.`
+      : `Otváram ${lvs.length} výpisov na Katastri. Na každom „Nie som robot“ (ÚGKK). Potom záložka „PZF: načítať výpis“, alebo nainštalujte rozšírenie.`,
     'info',
-    { ms: 14000, actionLabel: 'Načítať z Katastra', onAction: () => loadVypisFromKataster({}) },
+    {
+      ms: 14000,
+      actionLabel: pzfHasExt() ? 'Načítať zo schránky' : 'Ako načítať',
+      onAction: () => (pzfHasExt() ? loadVypisFromKataster({}) : openGrabHelp()),
+    },
   );
   lvs.forEach((item, i) => {
     setTimeout(() => {
@@ -5361,6 +5576,8 @@ async function boot() {
   try {
     await initDb();
     loadExtractStore();
+    _bootReady = true;
+    flushPendingVypis();
     bindBookmarkletLinks();
     hydrateExtractsIntoDb().catch(() => {});
     showSourceBannerIfNeeded();
