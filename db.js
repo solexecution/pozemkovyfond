@@ -300,7 +300,7 @@ function tokensOf(s) {
 function tokenPred(col, q, opts = {}) {
   const toks = tokensOf(q);
   if (!toks.length) return '';
-  const prefixFirst = opts.prefixFirst !== false && toks[0].length >= 2;
+  const prefixFirst = opts.prefixFirst === true && toks[0].length >= 2;
   return toks.map((t, i) => {
     const esc = t.replace(/'/g, "''");
     if (prefixFirst && i === 0) return prefixPred(col, esc);
@@ -317,6 +317,12 @@ function foldedNamePred(rawList) {
     const norms = folded.map((f) => `'${f}'`).join(', ');
     parts.push(`meno_norm IN (${norms})`);
     parts.push(folded.map((f) => `(meno_norm LIKE '${f} %' OR meno_norm LIKE '${f},%')`).join(' OR '));
+    for (const item of raw) {
+      const toks = tokensOf(item);
+      if (toks.length >= 2) {
+        parts.push(`(${toks.map((t) => `contains(meno_norm, '${t.replace(/'/g, "''")}')`).join(' AND ')})`);
+      }
+    }
   }
   return parts.length ? `(${parts.join(' OR ')})` : '1=0';
 }
@@ -615,14 +621,17 @@ async function overviewSearch(q) {
     LIMIT 40
   `) : [];
 
-  const surname = first ? ((await queryObjects(`
+  const surnameWhere = tokens.length
+    ? tokens.filter((t) => t.length >= 2).map((t) => prefixPred('token', t.replace(/'/g, "''"))).join(' OR ')
+    : '';
+  const surname = surnameWhere ? ((await queryObjects(`
     SELECT
       COALESCE(SUM(recs), 0) AS total,
       COALESCE(SUM(names), 0) AS unique_names,
       COALESCE(SUM(places), 0) AS unique_places,
       COALESCE(SUM(lvs), 0) AS unique_lv
     FROM surnames
-    WHERE ${prefixPred('token', first.replace(/'/g, "''"))}
+    WHERE ${surnameWhere}
   `))[0] || { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 })
     : { total: 0, unique_names: 0, unique_places: 0, unique_lv: 0 };
 
@@ -742,12 +751,7 @@ async function placeSearch(q) {
 function nameWhisperPred(q) {
   const toks = tokensOf(q);
   if (!toks.length || toks[0].length < 2) return '';
-  const first = toks[0].replace(/'/g, "''");
-  const parts = [prefixPred('meno_norm', first)];
-  for (const t of toks.slice(1)) {
-    parts.push(`contains(meno_norm, ' ${t.replace(/'/g, "''")}')`);
-  }
-  return parts.join(' AND ');
+  return toks.map((t) => `contains(meno_norm, '${t.replace(/'/g, "''")}')`).join(' AND ');
 }
 
 async function nameSearch(q) {
@@ -1079,13 +1083,8 @@ async function owners(q) {
   if (namePred) conds.push(namePred);
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
-  const nameToks = tokensOf(fName || search);
-  const countToken = nameToks[0] || '';
   let total;
-  if (countToken && nameToks.length === 1 && !fKu && !fCislo && !fLv) {
-    const est = await queryObjects(`SELECT COALESCE(SUM(recs), 0) AS cnt FROM surnames WHERE ${prefixPred('token', countToken)}`);
-    total = est[0].cnt;
-  } else if (!where) {
+  if (!where) {
     total = cachedStats?.total_unknown_owners ?? 0;
   } else {
     const cntRow = await queryObjects(`SELECT COUNT(*) as cnt FROM unknown_owners ${where}`);
@@ -1264,7 +1263,7 @@ async function correlations() {
 }
 
 async function lvAnalysis(q) {
-  const searchName = (q.name || 'horvath').trim();
+  const searchName = (q.name || '').trim();
   const lvBreakdown = await queryObjects(`
     SELECT
       o.lv,

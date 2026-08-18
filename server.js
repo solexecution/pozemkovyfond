@@ -219,6 +219,13 @@ function normStr(s) {
     .replace(/'/g, "''");  // escape SQL quotes
 }
 
+/** Build tokenized LIKE conditions so words match in any order (first name / last name) */
+function tokenLikeSql(col, str) {
+  const toks = normStr(str).split(/\s+/).filter(Boolean);
+  if (!toks.length) return '';
+  return toks.map(t => `${col} LIKE '%${t}%'`).join(' AND ');
+}
+
 /** GET /api/geo-stats — Aggregated counts per cadastral unit / town for map */
 app.get('/api/geo-stats', async (req, res) => {
   try {
@@ -394,11 +401,14 @@ app.get('/api/owners', async (req, res) => {
     const sortDir = req.query.sort_dir === 'DESC' ? 'DESC' : 'ASC';
 
     const conds = [];
-    if (q)      conds.push(`meno_norm LIKE '%${q}%'`);
-    if (fKu)    conds.push(`ku_norm LIKE '%${fKu}%'`);
-    if (fCislo) conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
-    if (fLv)    conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-    if (fName)  conds.push(`meno_norm LIKE '%${fName}%'`);
+    const qPred = tokenLikeSql('meno_norm', req.query.q);
+    const fKuPred = tokenLikeSql('ku_norm', req.query.f_ku);
+    const fNamePred = tokenLikeSql('meno_norm', req.query.f_name);
+    if (qPred)     conds.push(qPred);
+    if (fKuPred)   conds.push(fKuPred);
+    if (fCislo)    conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
+    if (fLv)       conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
+    if (fNamePred) conds.push(fNamePred);
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
@@ -425,9 +435,6 @@ app.get('/api/transferred', async (req, res) => {
     const limit  = Math.min(parseInt(req.query.limit) || 50, 200);
     const offset = (page - 1) * limit;
 
-    const q       = normStr(req.query.q || '');
-    const fVlast  = normStr(req.query.f_vlast || req.query.f_vast || '');
-    const fKu     = normStr(req.query.f_ku || '');
     const fLv     = (req.query.f_lv || '').trim().replace(/'/g, "''");
     const fCislo  = (req.query.f_cislo || '').trim().replace(/'/g, "''");
     const fDatum  = (req.query.f_datum || '').trim().replace(/'/g, "''");
@@ -445,13 +452,16 @@ app.get('/api/transferred', async (req, res) => {
     const sortDir = req.query.sort_dir === 'ASC' ? 'ASC' : 'DESC';
 
     const conds = [];
-    if (q)      conds.push(`vlastnik_norm LIKE '%${q}%'`);
-    if (fVlast) conds.push(`vlastnik_norm LIKE '%${fVlast}%'`);
-    if (fKu)    conds.push(`ku_norm LIKE '%${fKu}%'`);
-    if (fLv)    conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-    if (fCislo) conds.push(`CAST(cislo_ku AS VARCHAR) LIKE '%${fCislo}%'`);
-    if (fDatum) conds.push(`datum_ucinnosti LIKE '%${fDatum}%'`);
-    if (fYear)  conds.push(`year = ${fYear}`);
+    const qPred = tokenLikeSql('vlastnik_norm', req.query.q);
+    const fVlastPred = tokenLikeSql('vlastnik_norm', req.query.f_vlast || req.query.f_vast);
+    const fKuPred = tokenLikeSql('ku_norm', req.query.f_ku);
+    if (qPred)      conds.push(qPred);
+    if (fVlastPred) conds.push(fVlastPred);
+    if (fKuPred)    conds.push(fKuPred);
+    if (fLv)        conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
+    if (fCislo)     conds.push(`CAST(cislo_ku AS VARCHAR) LIKE '%${fCislo}%'`);
+    if (fDatum)     conds.push(`datum_ucinnosti LIKE '%${fDatum}%'`);
+    if (fYear)      conds.push(`year = ${fYear}`);
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
@@ -473,22 +483,22 @@ app.get('/api/transferred', async (req, res) => {
 /** GET /api/all-unique-transferred-lvs — Return ALL unique (lv, cislo_ku) pairs for given filters (no pagination) */
 app.get('/api/all-unique-transferred-lvs', async (req, res) => {
   try {
-    const q       = normStr(req.query.q || '');
-    const fVlast  = normStr(req.query.f_vlast || req.query.f_vast || '');
-    const fKu     = normStr(req.query.f_ku || '');
     const fLv     = (req.query.f_lv || '').trim().replace(/'/g, "''");
     const fCislo  = (req.query.f_cislo || '').trim().replace(/'/g, "''");
     const fDatum  = (req.query.f_datum || '').trim().replace(/'/g, "''");
     const fYear   = parseInt(req.query.f_year) || null;
 
     const conds = [];
-    if (q)      conds.push(`vlastnik_norm LIKE '%${q}%'`);
-    if (fVlast) conds.push(`vlastnik_norm LIKE '%${fVlast}%'`);
-    if (fKu)    conds.push(`ku_norm LIKE '%${fKu}%'`);
-    if (fLv)    conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-    if (fCislo) conds.push(`CAST(cislo_ku AS VARCHAR) LIKE '%${fCislo}%'`);
-    if (fDatum) conds.push(`datum_ucinnosti LIKE '%${fDatum}%'`);
-    if (fYear)  conds.push(`year = ${fYear}`);
+    const qPred = tokenLikeSql('vlastnik_norm', req.query.q);
+    const fVlastPred = tokenLikeSql('vlastnik_norm', req.query.f_vlast || req.query.f_vast);
+    const fKuPred = tokenLikeSql('ku_norm', req.query.f_ku);
+    if (qPred)      conds.push(qPred);
+    if (fVlastPred) conds.push(fVlastPred);
+    if (fKuPred)    conds.push(fKuPred);
+    if (fLv)        conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
+    if (fCislo)     conds.push(`CAST(cislo_ku AS VARCHAR) LIKE '%${fCislo}%'`);
+    if (fDatum)     conds.push(`datum_ucinnosti LIKE '%${fDatum}%'`);
+    if (fYear)      conds.push(`year = ${fYear}`);
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
@@ -660,18 +670,18 @@ function buildTokenWhere(col, searchName) {
 /** GET /api/all-unique-lvs — Return ALL unique (lv, poradove_cislo) pairs for given filters (no pagination) */
 app.get('/api/all-unique-lvs', async (req, res) => {
   try {
-    const q      = normStr(req.query.q || '');
-    const fKu    = normStr(req.query.f_ku || '');
-    const fName  = normStr(req.query.f_name || '');
     const fCislo = (req.query.f_cislo || '').trim().replace(/'/g, "''");
     const fLv    = (req.query.f_lv || '').trim().replace(/'/g, "''");
 
     const conds = [];
-    if (q)      conds.push(`meno_norm LIKE '%${q}%'`);
-    if (fKu)    conds.push(`ku_norm LIKE '%${fKu}%'`);
-    if (fCislo) conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
-    if (fLv)    conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
-    if (fName)  conds.push(`meno_norm LIKE '%${fName}%'`);
+    const qPred = tokenLikeSql('meno_norm', req.query.q);
+    const fKuPred = tokenLikeSql('ku_norm', req.query.f_ku);
+    const fNamePred = tokenLikeSql('meno_norm', req.query.f_name);
+    if (qPred)     conds.push(qPred);
+    if (fKuPred)   conds.push(fKuPred);
+    if (fCislo)    conds.push(`CAST(poradove_cislo AS VARCHAR) LIKE '%${fCislo}%'`);
+    if (fLv)       conds.push(`CAST(lv AS VARCHAR) LIKE '%${fLv}%'`);
+    if (fNamePred) conds.push(fNamePred);
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 

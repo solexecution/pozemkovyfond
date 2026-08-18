@@ -1315,7 +1315,8 @@ function cleanPersonName(raw) {
 }
 
 function nameKey(s) {
-  return fold(cleanPersonName(s));
+  const toks = tokensOf(cleanPersonName(s));
+  return toks.sort().join(' ');
 }
 
 function groupCleanNames(rows) {
