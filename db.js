@@ -411,8 +411,14 @@ export async function initDb() {
   const worker = new Worker(workerUrl);
   db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-  URL.revokeObjectURL(workerUrl);
   conn = await db.connect();
+  if (navigator.hardwareConcurrency && window.crossOriginIsolated) {
+    try {
+      const threads = Math.min(navigator.hardwareConcurrency || 4, 8);
+      await conn.query(`SET threads TO ${threads}`);
+      console.log(`🚀 DuckDB WASM running in MULTI-THREADED mode (${threads} Web Workers / PThreads)`);
+    } catch (_) {}
+  }
   setProgress(8);
 
   try {
