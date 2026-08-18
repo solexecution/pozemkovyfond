@@ -8,6 +8,22 @@ import { initDb, apiRequest } from './db.js';
 import { isLvVypisHtml } from './lv-html.js';
 
 async function apiFetch(path, options = {}) {
+  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const cleanPath = path.startsWith('/') ? path : '/' + path;
+  const routeName = cleanPath.split('?')[0];
+  const backendRoutes = ['/lv-preview', '/save-lv-data', '/swap-analysis', '/custom-query'];
+
+  if (isLocal && backendRoutes.includes(routeName)) {
+    const url = `/api${cleanPath}`;
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      }
+    });
+  }
+
   const data = await apiRequest(path, options);
   const isHtml = typeof data === 'string';
   return {

@@ -398,10 +398,19 @@ function prefixPred(col, token) {
 export async function initDb() {
   if (ready) return;
 
-  await waitForFirstDownloadConsent();
+  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-  setStatus('Inicializujem DuckDB WASM...');
-  setProgress(2);
+  if (!isLocal) {
+    await waitForFirstDownloadConsent();
+  } else {
+    const consent = document.getElementById('boot-consent');
+    if (consent) consent.style.display = 'none';
+    const prog = document.getElementById('boot-progress');
+    if (prog) prog.hidden = false;
+  }
+
+  setStatus('Inicializujem DuckDB...');
+  setProgress(5);
 
   const bundles = duckdb.getJsDelivrBundles();
   const bundle = await duckdb.selectBundle(bundles);
