@@ -2485,8 +2485,8 @@ function renderDossier(data) {
             <th>LV</th>
             <th>k.ú.</th>
             <th>Kód</th>
-            <th>Neznámych</th>
-            <th>Odhad podielu</th>
+            <th>Neznámych v SPF</th>
+            <th>Podiel</th>
             <th>Zápis v registri</th>
             <th>Prevod</th>
             <th></th>
@@ -2499,13 +2499,21 @@ function renderDossier(data) {
               ? xfers.map((x) => `${x.year || ''} → ${x.vlastnik_lv || ''}${x.datum_ucinnosti ? ` (${x.datum_ucinnosti})` : ''}`).join('; ')
               : '—';
             const safeKu = jsAttr(r.ku_name);
+            const ext = (data.extracts || {})[`${r.cislo_ku}:${r.lv}`];
+            let shareDisplay = `<strong>${r.portion ?? '—'}</strong> <span class="cell-muted" style="font-size:0.75rem">v SPF</span>`;
+            if (ext && ext.owners && ext.owners.length) {
+              const matchedOwner = ext.owners.find((o) => matchesFolded(o.meno_vlastnika, s.name) || matchesFolded(s.name, o.meno_vlastnika));
+              if (matchedOwner && matchedOwner.podiel_str) {
+                shareDisplay = `<strong style="color:#10b981">${esc(matchedOwner.podiel_str)}</strong> <span class="cell-muted" style="font-size:0.75rem">(${ext.doc?.pocet_vlastnikov || ext.owners.length} vl.)</span>`;
+              }
+            }
             return `
               <tr>
                 <td><span class="badge badge-amber badge-clickable" onclick="window.openKatasterLV('${safeKu}', '${r.cislo_ku}', '${r.lv}')">LV ${fmt(r.lv)}</span></td>
                 <td>${esc(r.ku_name)}</td>
                 <td>${fmt(r.cislo_ku)}</td>
                 <td>${fmt(r.names_on_lv)}</td>
-                <td><strong>${r.portion ?? '—'}</strong></td>
+                <td>${shareDisplay}</td>
                 <td class="cell-muted">${esc(r.variants || '—')}</td>
                 <td class="cell-muted">${esc(xferTxt)}</td>
                 <td>${lvLinksHtml(r.lv, r.cislo_ku, r.ku_name, 'Výpis')}</td>
@@ -2525,13 +2533,13 @@ function renderDossier(data) {
         <span class="badge ${chance.cls}">Šanca ${chance.label}</span>
       </header>
       <p class="insight-note">
-        Odhad podielu je súčet 1/N na každom liste, kde N je počet neznámych z tohto registra — nie výmera z katastra.
-        Solo LV = na liste nie je iný neznámy; to je najlepší kandidát na väčší kus pôdy.
+        <strong>Solo LV v SPF:</strong> Na tomto liste vlastníctva je v registri SPF evidovaný iba 1 neznámy vlastník (žiadni ďalší neznámi dediči z registra SPF).
+        Neznamená to, že vlastní 100% celej parcely — na LV sú spravidla aj ďalší <strong>známi / žijúci spoluvlastníci</strong> (napr. podiel 1/6 a pod.). Skutočný zlomkový podiel a výmeru m² určí výpis z Katastra.
       </p>
       <div class="stat-grid ov-search-stats">
         <div class="stat-card"><div class="stat-label">LV v tomto k.ú.</div><div class="stat-value">${fmt(s.lvs)}</div></div>
-        <div class="stat-card"><div class="stat-label">Solo LV</div><div class="stat-value">${fmt(s.solo_lvs)}</div><div class="stat-sub">jediný neznámy na liste</div></div>
-        <div class="stat-card"><div class="stat-label">Odhad podielu</div><div class="stat-value">${s.portion ?? '—'}</div><div class="stat-sub">súčet 1/N na LV</div></div>
+        <div class="stat-card"><div class="stat-label">Solo LV v SPF</div><div class="stat-value">${fmt(s.solo_lvs)}</div><div class="stat-sub">jediný neznámy na LV</div></div>
+        <div class="stat-card"><div class="stat-label">Odhad podielu v SPF</div><div class="stat-value">${s.portion ?? '—'}</div><div class="stat-sub">súčet 1/N neznámych</div></div>
         <div class="stat-card"><div class="stat-label">Ø spoluvlastníkov</div><div class="stat-value">${s.avg_co ?? '—'}</div><div class="stat-sub">neznámych na LV</div></div>
       </div>
       <div class="bulk-lv-bar">
@@ -2542,10 +2550,10 @@ function renderDossier(data) {
           ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
       </div>
-      <h3 class="dossier-section">Solo LV — jediný neznámy vlastník</h3>
-      <p class="insight-note">Na liste nie je iný neznámy z registra. Podiel 1.0 = celý neznámy nárok na tom LV.</p>
+      <h3 class="dossier-section">Solo LV — jediný neznámy vlastník v registri SPF</h3>
+      <p class="insight-note">Na týchto LV nie je iný neznámy z registra SPF (žiadna konkurencia iných neznámych dedičov). Skutočný podiel na LV overte vo výpise.</p>
       <div class="table-wrap solo-lv-table">${lvRowsHtml(solo)}</div>
-      <h3 class="dossier-section">Ostatné LV — zdieľané s ďalšími neznámymi</h3>
+      <h3 class="dossier-section">Ostatné LV — zdieľané s ďalšími neznámymi v SPF</h3>
       <div class="table-wrap">${lvRowsHtml(shared)}</div>
       <h3 class="dossier-section">Ďalší neznámi na tých istých LV</h3>
       <p class="insight-note">Môžu to byť príbuzní alebo iní spoluvlastníci. Kliknutím prejdete na ich zápis v tom istom k.ú., ak tam sú.</p>
