@@ -2563,7 +2563,7 @@ function renderDossier(data) {
         <div>Otvoriť výpisy z katastra pre toto meno v tomto k.ú.</div>
         <div class="dossier-actions">
           <button class="bulk-lv-btn" type="button" onclick="window.shareSearchLink()">Zdieľať</button>
-          <button class="bulk-lv-btn" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff" type="button" onclick="window.openSwapAnalysis('${safeKu}', '${jsAttr(s.name)}')">🔄 Zámeny & Konsolidácia v k.ú.</button>
+          <button class="bulk-lv-btn" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff" type="button" onclick="window.openSwapAnalysis('${jsAttr(s.ku)}', '${jsAttr(s.name)}')">🔄 Zámeny & Konsolidácia v k.ú.</button>
           ${solo.length ? `<button class="bulk-lv-btn bulk-lv-btn-solo" type="button" onclick="window.openAllLvs(window._soloLvs)">Otvoriť ${solo.length} solo výpisov</button>` : ''}
           ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
