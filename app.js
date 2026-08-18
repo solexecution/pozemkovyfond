@@ -1114,6 +1114,7 @@ function showTab(name) {
       case 'transferred':  loadTransferred();  break;
       case 'overlap':      loadOverlap();      break;
       case 'correlations': loadCorrelations(); break;
+      case 'swaps':        loadSwapAnalysis(); break;
       case 'map':          initSlovakiaMap();  break;
     }
   }
@@ -2546,6 +2547,7 @@ function renderDossier(data) {
         <div>Otvoriť výpisy z katastra pre toto meno v tomto k.ú.</div>
         <div class="dossier-actions">
           <button class="bulk-lv-btn" type="button" onclick="window.shareSearchLink()">Zdieľať</button>
+          <button class="bulk-lv-btn" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff" type="button" onclick="window.openSwapAnalysis('${safeKu}', '${jsAttr(s.name)}')">🔄 Zámeny & Konsolidácia v k.ú.</button>
           ${solo.length ? `<button class="bulk-lv-btn bulk-lv-btn-solo" type="button" onclick="window.openAllLvs(window._soloLvs)">Otvoriť ${solo.length} solo výpisov</button>` : ''}
           ${lvs.length ? `<button class="bulk-lv-btn" type="button" onclick="window.openAllLvs(window._overviewLvs)">Otvoriť všetkých ${lvs.length}</button>` : ''}
         </div>
@@ -3163,6 +3165,341 @@ window.runLvAnalysisUI = () => {
   const q = document.getElementById('lv-analysis-search')?.value;
   loadLvAnalysis(q);
 };
+
+async function loadSwapAnalysis(ku, name) {
+  const kuInput = (ku ?? document.getElementById('swaps-ku-input')?.value ?? '').trim();
+  const nameInput = (name ?? document.getElementById('swaps-name-input')?.value ?? '').trim();
+
+  if (document.getElementById('swaps-ku-input')) document.getElementById('swaps-ku-input').value = kuInput;
+  if (document.getElementById('swaps-name-input')) document.getElementById('swaps-name-input').value = nameInput;
+
+  const params = new URLSearchParams();
+  if (kuInput) params.set('ku', kuInput);
+  if (nameInput) params.set('name', nameInput);
+
+  try {
+    const res = await apiFetch(`/swap-analysis?${params}`).then((r) => r.json());
+
+    if (document.getElementById('swaps-stat-lvs')) document.getElementById('swaps-stat-lvs').textContent = fmt(res.storedLvCount || 0);
+    if (document.getElementById('swaps-stat-owners')) document.getElementById('swaps-stat-owners').textContent = fmt(res.storedOwnersCount || 0);
+    if (document.getElementById('swaps-stat-swaps')) document.getElementById('swaps-stat-swaps').textContent = fmt(res.swapOpportunities?.length || 0);
+    if (document.getElementById('swaps-stat-buyouts')) document.getElementById('swaps-stat-buyouts').textContent = fmt(res.buyoutTargets?.length || 0);
+
+    // 1. Render Swap Opportunities
+    const swapWrap = document.getElementById('swaps-opportunities-wrap');
+    if (swapWrap) {
+      if (!res.swapOpportunities?.length) {
+        swapWrap.innerHTML = `
+          <div class="empty-state">
+            ${res.storedLvCount === 0 
+              ? 'V databáze zatiaľ nie sú uložené žiadne výpisy pre toto k.ú. Kliknite na "📂 Nahrať výpis (HTML)" alebo spracujte výpisy cez vyhľadávanie.' 
+              : 'Pre zvolené k.ú. / meno neboli nájdené priame bilaterálne zámeny s vyrovnanou výmerou.'}
+          </div>`;
+      } else {
+        swapWrap.innerHTML = `
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:1rem">
+            ${res.swapOpportunities.map((s, idx) => `
+              <div class="card" style="border:1px solid rgba(16,185,129,0.3);background:rgba(16,185,129,0.03);padding:1rem;border-radius:8px">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.75rem">
+                  <div>
+                    <strong style="color:var(--text-primary);font-size:0.95rem">Zámena #${idx + 1}</strong>
+                    <div style="font-size:0.8rem;color:var(--text-secondary)">k.ú. ${esc(s.ku)} (kód ${fmt(s.cislo_ku)})</div>
+                  </div>
+                  <span class="badge badge-green">Zhoda výmery ${s.score}%</span>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:0.5rem;align-items:center;margin-bottom:0.75rem;padding:0.75rem;background:rgba(0,0,0,0.15);border-radius:6px">
+                  <div>
+                    <div style="font-size:0.75rem;color:#93c5fd;font-weight:bold">${esc(s.ownerA)}</div>
+                    <div style="font-size:0.82rem;font-weight:bold">prenechá LV ${fmt(s.tradeAtoB.lv)}</div>
+                    <div style="font-size:0.75rem;color:var(--text-secondary)">podiel ${esc(s.tradeAtoB.share)} (${fmt(s.tradeAtoB.m2)} m²)</div>
+                  </div>
+                  <div style="font-size:1.2rem;color:#10b981;font-weight:bold">⇄</div>
+                  <div>
+                    <div style="font-size:0.75rem;color:#fcd34d;font-weight:bold">${esc(s.ownerB)}</div>
+                    <div style="font-size:0.82rem;font-weight:bold">prenechá LV ${fmt(s.tradeBtoA.lv)}</div>
+                    <div style="font-size:0.75rem;color:var(--text-secondary)">podiel ${esc(s.tradeBtoA.share)} (${fmt(s.tradeBtoA.m2)} m²)</div>
+                  </div>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;flex-wrap:wrap;gap:0.5rem">
+                  <span style="color:var(--text-secondary)">
+                    Rozdiel: <strong>${fmt(s.diffM2)} m²</strong> 
+                    ${s.cashEqualizationEur > 0 ? `· Doplatok: <strong>~${fmt(s.cashEqualizationEur)} €</strong> (${esc(s.paysCash || '')})` : '· Bez doplatku'}
+                  </span>
+                  <button class="bulk-lv-btn" style="padding:0.3rem 0.6rem;font-size:0.75rem" onclick="window.generateSwapContractModal(${idx})">
+                    📄 Návrh zmluvy
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>`;
+      }
+    }
+
+    // 2. Render Buyout Targets
+    const buyWrap = document.getElementById('swaps-buyouts-wrap');
+    if (buyWrap) {
+      if (!res.buyoutTargets?.length) {
+        buyWrap.innerHTML = '<div class="empty-state">Žiadne dominantné podiely v tomto k.ú.</div>';
+      } else {
+        buyWrap.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>LV</th>
+                <th>k.ú.</th>
+                <th>Väčšinový vlastník</th>
+                <th>Jeho podiel</th>
+                <th>Vlastní m²</th>
+                <th>Zostáva vykúpiť (m²)</th>
+                <th>Odhad výkupu (~1 €/m²)</th>
+                <th>Spoluvlastníci na odkúpenie</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${res.buyoutTargets.map((b) => `
+                <tr>
+                  <td><span class="badge badge-amber">LV ${fmt(b.lv)}</span></td>
+                  <td>${esc(b.nazov_ku)}</td>
+                  <td><strong>${esc(b.topOwner)}</strong></td>
+                  <td><span class="badge badge-green">${esc(b.topShareStr)} (${b.topSharePct}%)</span></td>
+                  <td>${fmt(b.topOwnedM2)} m²</td>
+                  <td><strong style="color:#fcd34d">${fmt(b.remainingM2)} m²</strong></td>
+                  <td>~${fmt(b.totalBuyoutEstEur)} €</td>
+                  <td>
+                    <small style="color:var(--text-secondary)">
+                      ${b.minorities.map(m => `${esc(m.name)} (${esc(m.share)}, ${fmt(m.m2)} m²)`).join(' · ')}
+                    </small>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`;
+      }
+    }
+
+    // 3. Render Ownership Matrix
+    const matWrap = document.getElementById('swaps-matrix-wrap');
+    if (matWrap) {
+      if (!res.owners?.length || !res.lvs?.length) {
+        matWrap.innerHTML = '<div class="empty-state">Žiadne dáta v matici</div>';
+      } else {
+        matWrap.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>Spoluvlastník</th>
+                <th>Dátum nar.</th>
+                <th>Celková výmera v k.ú.</th>
+                <th>Počet LV</th>
+                ${res.lvs.map(l => `<th>LV ${fmt(l.lv)}<br><small style="font-weight:normal;opacity:0.7">${fmt(l.celkova_vymera_m2)} m²</small></th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${res.owners.map(o => `
+                <tr>
+                  <td><strong>${esc(o.name)}</strong></td>
+                  <td class="cell-muted">${esc(o.dob || '—')}</td>
+                  <td><strong style="color:#10b981">${fmt(o.total_owned_m2)} m²</strong> <small>(${o.total_owned_ha} ha)</small></td>
+                  <td><span class="badge badge-blue">${o.holdings.length}</span></td>
+                  ${res.lvs.map(l => {
+                    const h = o.holdings.find(x => x.lv === l.lv && x.cislo_ku === l.cislo_ku);
+                    if (!h) return '<td class="cell-muted" style="text-align:center">—</td>';
+                    return `<td><span class="badge badge-green">${esc(h.podiel_str)}</span><br><small>${fmt(h.owned_m2)} m²</small></td>`;
+                  }).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`;
+      }
+    }
+
+    // 4. Render Subdivision Candidates
+    const subWrap = document.getElementById('swaps-subdivision-wrap');
+    if (subWrap) {
+      if (!res.subdivisionCandidates?.length) {
+        subWrap.innerHTML = '<div class="empty-state">V tomto k.ú. sa nenašli parcely s podielom nad 2 000 m²</div>';
+      } else {
+        subWrap.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>LV</th>
+                <th>k.ú.</th>
+                <th>Parcela</th>
+                <th>Druh pozemku</th>
+                <th>Celková výmera parcely</th>
+                <th>Vlastník</th>
+                <th>Podiel</th>
+                <th>Výmera podielu (m²)</th>
+                <th>Spôsob vysporiadania</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${res.subdivisionCandidates.map((c) => `
+                <tr>
+                  <td><span class="badge badge-amber">LV ${fmt(c.lv)}</span></td>
+                  <td>${esc(c.nazov_ku)}</td>
+                  <td><strong>${c.register_type} ${esc(c.parcel_no)}</strong></td>
+                  <td>${esc(c.druh_pozemku)}</td>
+                  <td>${fmt(c.total_parcel_m2)} m²</td>
+                  <td><strong>${esc(c.owner)}</strong></td>
+                  <td><span class="badge badge-green">${esc(c.share)}</span></td>
+                  <td><strong style="color:#10b981">${fmt(c.shareM2)} m²</strong></td>
+                  <td><span class="badge badge-blue">📐 Geometrický plán (Reálna deľba 1/1)</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`;
+      }
+    }
+
+    window._lastSwapResults = res;
+
+  } catch (e) {
+    showToast('Chyba pri analýze zámen: ' + e.message, 'error');
+  }
+}
+window.loadSwapAnalysis = loadSwapAnalysis;
+window.runSwapAnalysisUI = () => {
+  const ku = document.getElementById('swaps-ku-input')?.value;
+  const name = document.getElementById('swaps-name-input')?.value;
+  loadSwapAnalysis(ku, name);
+};
+window.openSwapAnalysis = (ku, name) => {
+  showTab('swaps');
+  if (document.getElementById('swaps-ku-input')) document.getElementById('swaps-ku-input').value = ku || '';
+  if (document.getElementById('swaps-name-input')) document.getElementById('swaps-name-input').value = name || '';
+  loadSwapAnalysis(ku, name);
+};
+
+window.generateSwapContractModal = (idx) => {
+  const swap = (window._lastSwapResults?.swapOpportunities || [])[idx];
+  if (!swap) return;
+
+  const text = `ZÁMENNÁ ZMLUVA
+uzatvorená podľa § 611 a nasl. Občianskeho zákonníka v platnom znení
+
+Zmluvné strany:
+1. Účastník 1: ${swap.ownerA}
+2. Účastník 2: ${swap.ownerB}
+
+Článok I.
+Predmet zámeny
+
+1. Účastník 1 je podielovým spoluvlastníkom nehnuteľností evidovaných Okresným úradom, katastrálnym odborom, pre katastrálne územie ${swap.ku} (kód ${swap.cislo_ku}), na Liste vlastníctva č. ${swap.tradeAtoB.lv}, v spoluvlastníckom podiele ${swap.tradeAtoB.share} (predstavujúcom výmeru ${swap.tradeAtoB.m2} m²).
+
+2. Účastník 2 je podielovým spoluvlastníkom nehnuteľností evidovaných pre katastrálne územie ${swap.ku} (kód ${swap.cislo_ku}), na Liste vlastníctva č. ${swap.tradeBtoA.lv}, v spoluvlastníckom podiele ${swap.tradeBtoA.share} (predstavujúcom výmeru ${swap.tradeBtoA.m2} m²).
+
+Článok II.
+Prevod a zámena
+
+1. Účastník 1 touto zmluvou zamieňa a prevádza svoj spoluvlastnícky podiel ${swap.tradeAtoB.share} na LV č. ${swap.tradeAtoB.lv} do výlučného vlastníctva Účastníka 2, a Účastník 2 tento podiel prijíma do svojho vlastníctva.
+
+2. Účastník 2 touto zmluvou zamieňa a prevádza svoj spoluvlastnícky podiel ${swap.tradeBtoA.share} na LV č. ${swap.tradeBtoA.lv} do výlučného vlastníctva Účastníka 1, a Účastník 1 tento podiel prijíma do svojho vlastníctva.
+
+Článok III.
+Finančné vyrovnanie
+
+${swap.cashEqualizationEur > 0 
+  ? `Zmluvné strany konštatujú rozdiel vo výmere ${swap.diffM2} m². Účastník (${swap.paysCash}) sa zaväzuje doplatiť druhému účastníkovi sumu vo výške ${swap.cashEqualizationEur} EUR na finančné vyrovnanie hodnoty podielov do 14 dní od podpisu zmluvy.`
+  : 'Zmluvné strany sa dohodli, že zámena sa uskutočňuje bez finančného doplatku, nakoľko hodnoty vzájomne zamieňaných podielov považujú za rovnocenné.'}
+
+Článok IV.
+Záverečné ustanovenia
+
+Zmluva nadobúda platnosť dňom podpisu oboma zmluvnými stranami a vecnoprávne účinky vkladom vlastníckeho práva do katastra nehnuteľností.
+
+V .............................., dňa ....................
+
+
+...................................................          ...................................................
+                 ${swap.ownerA}                                               ${swap.ownerB}`;
+
+  const modalHtml = `
+    <div class="modal-overlay" id="swap-contract-modal" onclick="if(event.target===this)this.remove()">
+      <div class="modal-card" style="max-width:720px;width:95%;max-height:85vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+          <h3 style="margin:0;font-size:1.1rem">📄 Návrh Zámennej Zmluvy (§ 611 OZ)</h3>
+          <button class="bulk-lv-btn" onclick="document.getElementById('swap-contract-modal').remove()">✕</button>
+        </div>
+        <textarea readonly style="flex:1;min-height:350px;font-family:monospace;font-size:0.8rem;padding:0.75rem;border-radius:6px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-color);resize:none">${esc(text)}</textarea>
+        <div style="display:flex;justify-content:flex-end;gap:0.75rem;margin-top:1rem">
+          <button class="btn" onclick="navigator.clipboard.writeText(document.querySelector('#swap-contract-modal textarea').value);showToast('Text zmluvy bol skopírovaný do schránky!','success')">📋 Kopírovať zmluvu</button>
+          <button class="bulk-lv-btn" onclick="document.getElementById('swap-contract-modal').remove()">Zavrieť</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+};
+
+window.openImportModal = () => {
+  const modalHtml = `
+    <div class="modal-overlay" id="lv-import-modal" onclick="if(event.target===this)this.remove()">
+      <div class="modal-card" style="max-width:640px;width:95%">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+          <h3 style="margin:0;font-size:1.1rem">📂 Nahrať alebo Vložiť Výpis z Katastra</h3>
+          <button class="bulk-lv-btn" onclick="document.getElementById('lv-import-modal').remove()">✕</button>
+        </div>
+        <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:1rem">
+          Presuňte sem stiahnutý HTML súbor výpisu (napr. <code>LV - 880.html</code>) alebo vložte jeho zdrojový kód / text.
+        </p>
+        <div id="drop-zone" style="border:2px dashed #3b82f6;border-radius:8px;padding:2rem;text-align:center;background:rgba(59,130,246,0.05);cursor:pointer;margin-bottom:1rem" onclick="document.getElementById('import-file-input').click()">
+          <div style="font-size:2rem;margin-bottom:0.5rem">📄</div>
+          <div style="font-weight:bold">Kliknite sem alebo pretiahnite HTML súbor</div>
+          <input type="file" id="import-file-input" accept=".html,.htm,.txt" style="display:none" onchange="window.handleImportFile(event)">
+        </div>
+        <textarea id="import-paste-area" placeholder="Alebo sem priamo vložte text / HTML výpisu..." style="width:100%;height:120px;font-size:0.8rem;padding:0.5rem;margin-bottom:1rem;border-radius:6px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-color)"></textarea>
+        <div style="display:flex;justify-content:flex-end;gap:0.75rem">
+          <button class="btn" onclick="window.handleImportPaste()">⚡ Spracovať a uložiť</button>
+          <button class="bulk-lv-btn" onclick="document.getElementById('lv-import-modal').remove()">Zrušiť</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+};
+
+window.handleImportFile = (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const content = e.target.result;
+    await processAndSaveImport(content);
+  };
+  reader.readAsText(file);
+};
+
+window.handleImportPaste = async () => {
+  const content = document.getElementById('import-paste-area')?.value;
+  if (!content || content.length < 50) {
+    showToast('Vložte platný text alebo HTML výpisu', 'warning');
+    return;
+  }
+  await processAndSaveImport(content);
+};
+
+async function processAndSaveImport(raw) {
+  try {
+    const saveResp = await apiFetch('/save-lv-data', {
+      method: 'POST',
+      body: JSON.stringify({
+        items: [{ lv: 0, ku: 0, text: raw }]
+      })
+    }).then(r => r.json());
+
+    if (saveResp.savedDocs > 0) {
+      showToast(`Úspešne spracovaný a uložený výpis (${saveResp.savedParcels} parciel, ${saveResp.savedOwners} vlastníkov)!`, 'success');
+      document.getElementById('lv-import-modal')?.remove();
+      runSwapAnalysisUI();
+    } else {
+      showToast('Výpis sa nepodarilo naparsovať. Skontrolujte formát.', 'error');
+    }
+  } catch (e) {
+    showToast('Chyba pri ukladaní výpisu: ' + e.message, 'error');
+  }
+}
+
 
 function renderOwnerTable(rows, focusInfo) {
   const wrap = document.getElementById('owners-table-wrap');

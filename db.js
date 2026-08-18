@@ -1320,14 +1320,216 @@ async function lvAnalysis(q) {
     ORDER BY shared_lvs_count DESC, o2.meno_vlastnika
     LIMIT 25
   `);
+async function swapAnalysis(q) {
+  const kuQuery = (q.ku || '').trim();
+  const nameQuery = (q.name || '').trim();
+
+  let kuWhere = '1=1';
+  if (kuQuery) {
+    if (/^\d+$/.test(kuQuery)) {
+      kuWhere = `d.cislo_ku = ${parseInt(kuQuery, 10)}`;
+    } else {
+      kuWhere = `(d.nazov_ku ILIKE '%${escSql(kuQuery)}%' OR d.obec ILIKE '%${escSql(kuQuery)}%')`;
+    }
+  }
+
+  const allOwners = await queryObjects(`
+    SELECT
+      o.cislo_ku,
+      d.nazov_ku,
+      d.obec,
+      d.okres,
+      d.celkova_vymera_m2,
+      o.lv,
+      o.poradove_cislo,
+      o.meno_vlastnika,
+      o.datum_narodenia,
+      o.podiel_str,
+      o.podiel_decimal,
+      ROUND(d.celkova_vymera_m2 * o.podiel_decimal, 2) AS owned_m2,
+      o.titul_nadobudnutia
+    FROM lv_owners o
+    JOIN lv_details d ON o.lv = d.lv AND o.cislo_ku = d.cislo_ku
+    WHERE ${kuWhere}
+    ORDER BY d.nazov_ku, o.meno_vlastnika, o.lv
+  `);
+
+  const allParcels = await queryObjects(`
+    SELECT p.cislo_ku, p.lv, p.register_type, p.parcel_no, p.vymera_m2, p.druh_pozemku
+    FROM lv_parcels p
+    JOIN lv_details d ON p.lv = d.lv AND p.cislo_ku = d.cislo_ku
+    WHERE ${kuWhere}
+    ORDER BY p.cislo_ku, p.lv, p.vymera_m2 DESC
+  `);
+
+  const allLvs = await queryObjects(`
+    SELECT d.lv, d.cislo_ku, d.nazov_ku, d.obec, d.okres, d.celkova_vymera_m2,
+           d.pocet_parciel_c, d.pocet_parciel_e, d.pocet_vlastnikov
+    FROM lv_details d
+    WHERE ${kuWhere}
+    ORDER BY d.nazov_ku, d.lv
+  `);
+
+  // Build owner map and LV map
+  const lvMap = new Map();
+  allLvs.forEach((l) => {
+    lvMap.set(`${l.cislo_ku}:${l.lv}`, { ...l, owners: [], parcels: [] });
+  });
+
+  allParcels.forEach((p) => {
+    const key = `${p.cislo_ku}:${p.lv}`;
+    if (lvMap.has(key)) lvMap.get(key).parcels.push(p);
+  });
+
+  const ownerMap = new Map();
+  allOwners.forEach((o) => {
+    const lvKey = `${o.cislo_ku}:${o.lv}`;
+    if (lvMap.has(lvKey)) lvMap.get(lvKey).owners.push(o);
+
+    const normKey = foldName(o.meno_vlastnika).trim();
+    if (!ownerMap.has(normKey)) {
+      ownerMap.set(normKey, {
+        name: o.meno_vlastnika,
+        dob: o.datum_narodenia,
+        total_owned_m2: 0,
+        holdings: [],
+      });
+    }
+    const rec = ownerMap.get(normKey);
+    rec.total_owned_m2 += o.owned_m2 || 0;
+    rec.holdings.push({
+      lv: o.lv,
+      cislo_ku: o.cislo_ku,
+      nazov_ku: o.nazov_ku,
+      podiel_str: o.podiel_str,
+      podiel_decimal: o.podiel_decimal,
+      owned_m2: o.owned_m2,
+      total_m2: o.celkova_vymera_m2,
+    });
+  });
+
+  const ownersList = Array.from(ownerMap.values()).map((o) => ({
+    ...o,
+    total_owned_m2: Math.round(o.total_owned_m2 * 100) / 100,
+    total_owned_ha: Math.round((o.total_owned_m2 / 10000) * 10000) / 10000,
+  })).sort((a, b) => b.total_owned_m2 - a.total_owned_m2);
+
+  // 1. Bilateral Swap Opportunities
+  const swapOpportunities = [];
+  const ownerKeys = Array.from(ownerMap.keys());
+
+  for (let i = 0; i < ownerKeys.length; i++) {
+    for (let j = i + 1; j < ownerKeys.length; j++) {
+      const oA = ownerMap.get(ownerKeys[i]);
+      const oB = ownerMap.get(ownerKeys[j]);
+
+      // Check all pairs of holdings
+      for (const hA of oA.holdings) {
+        for (const hB of oB.holdings) {
+          if (hA.cislo_ku !== hB.cislo_ku || hA.lv === hB.lv) continue;
+
+          // Swap candidate: A gives hA on LV1 to B; B gives hB on LV2 to A
+          const m2A = hA.owned_m2;
+          const m2B = hB.owned_m2;
+          if (m2A <= 0 || m2B <= 0) continue;
+
+          const diffM2 = Math.round(Math.abs(m2A - m2B) * 100) / 100;
+          const maxM2 = Math.max(m2A, m2B);
+          const diffPct = maxM2 > 0 ? (diffM2 / maxM2) : 1;
+
+          if (diffPct <= 0.40) { // Max 40% difference for a realistic swap
+            const score = Math.round((1 - diffPct) * 100);
+            swapOpportunities.push({
+              ownerA: oA.name,
+              ownerB: oB.name,
+              ku: hA.nazov_ku,
+              cislo_ku: hA.cislo_ku,
+              tradeAtoB: { lv: hA.lv, share: hA.podiel_str, m2: m2A },
+              tradeBtoA: { lv: hB.lv, share: hB.podiel_str, m2: m2B },
+              diffM2,
+              cashEqualizationEur: Math.round(diffM2 * 1.0),
+              paysCash: m2A > m2B ? oB.name : (m2B > m2A ? oA.name : null),
+              score,
+            });
+          }
+        }
+      }
+    }
+  }
+  swapOpportunities.sort((a, b) => b.score - a.score || a.diffM2 - b.diffM2);
+
+  // 2. Buyout & Consolidation Targets (LVs where an owner has >= 25% or highest share)
+  const buyoutTargets = [];
+  lvMap.forEach((lvDoc) => {
+    if (!lvDoc.owners.length) return;
+    const sortedOwners = [...lvDoc.owners].sort((a, b) => b.podiel_decimal - a.podiel_decimal);
+    const topOwner = sortedOwners[0];
+    const topSharePct = Math.round(topOwner.podiel_decimal * 1000) / 10;
+
+    if (topSharePct >= 20 && sortedOwners.length > 1) {
+      const minorities = sortedOwners.slice(1).map((m) => ({
+        name: m.meno_vlastnika,
+        poradove_cislo: m.poradove_cislo,
+        share: m.podiel_str,
+        m2: m.owned_m2,
+        estEur: Math.round(m.owned_m2 * 1.0),
+      }));
+      const remainingM2 = Math.round(minorities.reduce((s, m) => s + m.m2, 0) * 100) / 100;
+      buyoutTargets.push({
+        lv: lvDoc.lv,
+        cislo_ku: lvDoc.cislo_ku,
+        nazov_ku: lvDoc.nazov_ku,
+        total_m2: lvDoc.celkova_vymera_m2,
+        topOwner: topOwner.meno_vlastnika,
+        topShareStr: topOwner.podiel_str,
+        topSharePct,
+        topOwnedM2: topOwner.owned_m2,
+        remainingM2,
+        totalBuyoutEstEur: Math.round(remainingM2 * 1.0),
+        minorities,
+      });
+    }
+  });
+  buyoutTargets.sort((a, b) => b.topSharePct - a.topSharePct);
+
+  // 3. Physical Subdivision Candidates (parcels with owned share >= 2000 m2)
+  const subdivisionCandidates = [];
+  allParcels.forEach((p) => {
+    if (p.vymera_m2 < 2000) return;
+    const lvDoc = lvMap.get(`${p.cislo_ku}:${p.lv}`);
+    if (!lvDoc) return;
+    lvDoc.owners.forEach((o) => {
+      const shareM2 = Math.round(p.vymera_m2 * o.podiel_decimal * 100) / 100;
+      if (shareM2 >= 2000) {
+        subdivisionCandidates.push({
+          lv: p.lv,
+          cislo_ku: p.cislo_ku,
+          nazov_ku: lvDoc.nazov_ku,
+          parcel_no: p.parcel_no,
+          register_type: p.register_type,
+          druh_pozemku: p.druh_pozemku,
+          total_parcel_m2: p.vymera_m2,
+          owner: o.meno_vlastnika,
+          share: o.podiel_str,
+          shareM2,
+          minParcelLimitM2: 2000,
+          feasible: true,
+        });
+      }
+    });
+  });
+  subdivisionCandidates.sort((a, b) => b.shareM2 - a.shareM2);
+
   return {
-    searchName,
-    storedLvCount: lvBreakdown.length,
-    totalOwnedM2,
-    totalOwnedHa: (totalOwnedM2 / 10000).toFixed(4),
-    lvBreakdown,
-    landTypeBreakdown,
-    coOwners,
+    kuQuery,
+    nameQuery,
+    storedLvCount: allLvs.length,
+    storedOwnersCount: ownersList.length,
+    lvs: allLvs,
+    owners: ownersList,
+    swapOpportunities: swapOpportunities.slice(0, 50),
+    buyoutTargets: buyoutTargets.slice(0, 50),
+    subdivisionCandidates: subdivisionCandidates.slice(0, 50),
   };
 }
 
@@ -1555,6 +1757,9 @@ export async function apiRequest(path, options = {}) {
       break;
     case 'lv-analysis':
       result = await lvAnalysis(q);
+      break;
+    case 'swap-analysis':
+      result = await swapAnalysis(q);
       break;
     case 'save-lv-data':
       result = await saveLvData(body);

@@ -136,6 +136,7 @@
           <button class="nav-btn" onclick="showTab('overlap')" id="nav-overlap">Prienik dát</button>
           <button class="nav-btn" onclick="showTab('correlations')" id="nav-correlations">Korelácie</button>
           <button class="nav-btn" onclick="showTab('lv-analysis')" id="nav-lv-analysis">Analýza LV</button>
+          <button class="nav-btn" onclick="showTab('swaps')" id="nav-swaps">🔄 Zámeny & Konsolidácia</button>
           <button class="nav-btn" onclick="showTab('sql')" id="nav-sql">SQL</button>
         </div>
       </div>
@@ -533,6 +534,95 @@
       </div>
     </div>
   </div><!-- /tab-lv-analysis -->
+
+  <!-- ── TAB: SWAPS & LAND CONSOLIDATION ────────────────────────── -->
+  <div class="tab" id="tab-swaps">
+    <div class="card animate-in" style="margin-bottom:1.5rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:1rem">
+        <div>
+          <div class="card-title">🔄 Zámeny Pozemkov, Konsolidácia & Riešenie Zlomkov</div>
+          <div style="font-size:0.83rem;color:var(--text-secondary)">
+            Algoritmus redukcie zlomkového spoluvlastníctva: bilaterálne zámeny (barter 1:1), odkúpenie minoritných podielov do 100% a reálna deľba geometrickým plánom (§ 611 a § 141 Občianskeho zákonníka).
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+          <input type="text" class="search-input" id="swaps-ku-input" placeholder="Katastrálne územie (napr. Stráňany)..." style="width:220px">
+          <input type="text" class="search-input" id="swaps-name-input" placeholder="Meno (voliteľné)..." style="width:180px">
+          <button class="btn" onclick="runSwapAnalysisUI()">⚡ Analyzovať zámeny</button>
+          <button class="bulk-lv-btn" onclick="openImportModal()">📂 Nahrať výpis (HTML)</button>
+        </div>
+      </div>
+
+      <!-- Stats Grid -->
+      <div class="stat-grid" style="margin-bottom:1.5rem">
+        <div class="stat-card">
+          <div class="stat-label">Spracované LV v k.ú.</div>
+          <div class="stat-value" id="swaps-stat-lvs">0</div>
+          <div class="stat-sub">Výpisy v databáze</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Spoluvlastníci v k.ú.</div>
+          <div class="stat-value" id="swaps-stat-owners" style="color:#93c5fd">0</div>
+          <div class="stat-sub">Známi aj neznámi</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Možné Zámeny (1:1 Swap)</div>
+          <div class="stat-value" id="swaps-stat-swaps" style="color:#6ee7b7">0</div>
+          <div class="stat-sub">Bez nutnosti predaja cudzím</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Odkúpenie do 100% (1/1)</div>
+          <div class="stat-value" id="swaps-stat-buyouts" style="color:#fcd34d">0</div>
+          <div class="stat-sub">Väčšinové pozemky</div>
+        </div>
+      </div>
+
+      <!-- Swap Opportunities Section -->
+      <div style="margin-bottom:2rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+          <div class="card-title" style="font-size:0.95rem">🔄 1. Navrhované Bilaterálne Zámeny Pozemkov (§ 611 OZ)</div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">Zámena podielov medzi 2 spoluvlastníkmi na scelenie vlastníctva</span>
+        </div>
+        <div id="swaps-opportunities-wrap">
+          <div class="empty-state">Zadajte katastrálne územie a kliknite na "Analyzovať zámeny"</div>
+        </div>
+      </div>
+
+      <!-- Buyout & Majority Targets Section -->
+      <div style="margin-bottom:2rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+          <div class="card-title" style="font-size:0.95rem">🎯 2. Konsolidácia do 100% Celku (Odkúpenie / Darovanie Minorít)</div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">Listy vlastníctva, kde jeden vlastník drží väčšinu a stačí vyplatiť drobných dedičov</span>
+        </div>
+        <div id="swaps-buyouts-wrap">
+          <div class="empty-state">Zatiaľ žiadne dáta</div>
+        </div>
+      </div>
+
+      <!-- Ownership Matrix Section -->
+      <div style="margin-bottom:2rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+          <div class="card-title" style="font-size:0.95rem">📊 3. Matica Spoluvlastníkov v K.Ú. (Kto čo vlastní)</div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">Celkový prehľad výmer a podielov všetkých osôb na spracovaných LV</span>
+        </div>
+        <div class="table-wrap" id="swaps-matrix-wrap">
+          <div class="empty-state">Zatiaľ žiadne dáta</div>
+        </div>
+      </div>
+
+      <!-- Physical Subdivision Section -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+          <div class="card-title" style="font-size:0.95rem">📐 4. Reálna Geometrická Deľba (Parcely vhodné na Geometrický plán)</div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">Parcely nad 2 000 m², kde podiel spĺňa zákonný limit zákazu drobenia</span>
+        </div>
+        <div class="table-wrap" id="swaps-subdivision-wrap">
+          <div class="empty-state">Zatiaľ žiadne dáta</div>
+        </div>
+      </div>
+
+    </div>
+  </div><!-- /tab-swaps -->
 
   <!-- ── TAB: GEOGRAPHIC MAP OF SLOVAKIA ────────────────────────── -->
   <div class="tab" id="tab-map">

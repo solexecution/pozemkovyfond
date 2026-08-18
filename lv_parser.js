@@ -134,6 +134,102 @@ export function parseVypisInput(raw, defaultLv = 0, defaultKuCode = 0) {
 }
 
 export function parseLvHtml(html, defaultLv = 0, defaultKuCode = 0) {
+  const okresM = html.match(/Okres\s*<\/td>[^<]*<td[^>]*>:<\/td>[^<]*<td[^>]*>(\d+)<\/td>[^<]*<td[^>]*>([^<]+)<\/td>/i)
+    || html.match(/Okres\s*:\s*(\d+)?\s*([^\t\n\r<]+)/i);
+  const obecM = html.match(/Obec\s*<\/td>[^<]*<td[^>]*>:<\/td>[^<]*<td[^>]*>(\d+)<\/td>[^<]*<td[^>]*>([^<]+)<\/td>/i)
+    || html.match(/Obec\s*:\s*(\d+)?\s*([^\t\n\r<]+)/i);
+  const kuM = html.match(/Katastrálne územie\s*<\/td>[^<]*<td[^>]*>:<\/td>[^<]*<td[^>]*>(\d+)<\/td>[^<]*<td[^>]*>([^<]+)<\/td>/i)
+    || html.match(/Katastrálne územie\s*:\s*(\d+)\s*([^\t\n\r<]+)/i);
+  const lvM = html.match(/VÝPIS Z LISTU VLASTNÍCTVA č\.\s*(\d+)/i);
+
+  const okres = okresM ? (okresM[2] || okresM[1] || '').trim() : '';
+  const obec = obecM ? (obecM[2] || obecM[1] || '').trim() : '';
+  const cislo_ku = kuM ? parseInt(kuM[1], 10) : defaultKuCode;
+  const nazov_ku = kuM ? kuM[2].trim() : '';
+  const lv = lvM ? parseInt(lvM[1], 10) : defaultLv;
+
+  const parcels = [];
+  const owners = [];
+
+  // Match rows in Majetkova podstata (Part A)
+  const partA = html.split(/ČASŤ A:\s*MAJETKOVÁ PODSTATA/i)[1]?.split(/ČASŤ B:/i)[0] || '';
+  let currentReg = 'C';
+  if (/Parcely registra\s*[„"”]?E/i.test(partA)) currentReg = 'E';
+  else if (/Parcely registra\s*[„"”]?C/i.test(partA)) currentReg = 'C';
+
+  const trMatches = partA.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  for (const tr of trMatches) {
+    const tds = (tr.match(/<td[\s\S]*?<\/td>/gi) || [])
+      .map(td => td.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+    if (tds.length >= 3 && looksLikeParcelNo(tds[0])) {
+      const vymera = parseArea(tds[1]);
+      if (vymera > 0) {
+        parcels.push({
+          lv,
+          cislo_ku,
+          register_type: currentReg,
+          parcel_no: tds[0],
+          vymera_m2: vymera,
+          druh_pozemku: tds[2] || ''
+        });
+      }
+    }
+  }
+
+  // Match rows in Cast B: Vlastnici (Part B)
+  const partB = html.split(/ČASŤ B:\s*VLASTNÍCI/i)[1]?.split(/Správca|Nájomca|ČASŤ C:/i)[0] || '';
+  const trBMatches = partB.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  let currentOwner = null;
+
+  for (const tr of trBMatches) {
+    const tds = (tr.match(/<td[\s\S]*?<\/td>/gi) || [])
+      .map(td => td.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+    
+    if (tds.length >= 3 && /^\d+$/.test(tds[0]) && /^\d+\s*\/\s*\d+$/.test(tds[2])) {
+      if (currentOwner) owners.push(currentOwner);
+      const por = parseInt(tds[0], 10);
+      const fracM = tds[2].match(/(\d+)\s*\/\s*(\d+)/);
+      const num = parseInt(fracM[1], 10);
+      const den = parseInt(fracM[2], 10);
+      
+      const fullText = tds[1];
+      const { dob, ico, cleanName } = extractDobIco(fullText);
+
+      currentOwner = {
+        lv,
+        cislo_ku,
+        poradove_cislo: por,
+        meno_vlastnika: cleanName,
+        datum_narodenia: dob || (ico ? `IČO ${ico}` : ''),
+        ico,
+        podiel_str: `${num}/${den}`,
+        podiel_num: num,
+        podiel_den: den,
+        podiel_decimal: num / den,
+        titul_nadobudnutia: ''
+      };
+    } else if (currentOwner && tds.length >= 1 && /Titul nadobudnutia:/i.test(tds[0])) {
+      currentOwner.titul_nadobudnutia = tds[0].replace(/Titul nadobudnutia:\s*/i, '').trim();
+    }
+  }
+  if (currentOwner) owners.push(currentOwner);
+
+  // If HTML parsing yielded results, return them; otherwise fallback to text parser
+  if (parcels.length > 0 || owners.length > 0) {
+    const totalArea = parcels.reduce((s, p) => s + p.vymera_m2, 0);
+    return {
+      doc: {
+        lv, cislo_ku, nazov_ku, okres, obec,
+        pocet_parciel_c: parcels.filter(p => p.register_type === 'C').length,
+        pocet_parciel_e: parcels.filter(p => p.register_type === 'E').length,
+        celkova_vymera_m2: totalArea,
+        pocet_vlastnikov: owners.length
+      },
+      parcels,
+      owners
+    };
+  }
+
   return parseLvText(htmlToText(html), defaultLv, defaultKuCode);
 }
 
