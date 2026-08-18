@@ -300,12 +300,17 @@ function tokensOf(s) {
 function tokenPred(col, q, opts = {}) {
   const toks = tokensOf(q);
   if (!toks.length) return '';
-  const prefixFirst = opts.prefixFirst === true && toks[0].length >= 2;
-  return toks.map((t, i) => {
-    const esc = t.replace(/'/g, "''");
-    if (prefixFirst && i === 0) return prefixPred(col, esc);
-    return `contains(${col}, '${esc}')`;
-  }).join(' AND ');
+  const isMeno = col === 'meno_norm' || col === 's.meno_norm' || col === 'u.meno_norm';
+  const prefixConds = (opts.prefixFirst !== false || isMeno)
+    ? toks.filter((t) => t.length >= 2).map((t) => prefixPred(col, t.replace(/'/g, "''")))
+    : [];
+  const containsConds = toks.map((t) => `contains(${col}, '${t.replace(/'/g, "''")}')`);
+
+  if (prefixConds.length > 0) {
+    const prefixClause = prefixConds.length === 1 ? prefixConds[0] : `(${prefixConds.join(' OR ')})`;
+    return `(${prefixClause} AND ${containsConds.join(' AND ')})`;
+  }
+  return containsConds.join(' AND ');
 }
 
 function foldedNamePred(rawList) {
@@ -320,7 +325,10 @@ function foldedNamePred(rawList) {
     for (const item of raw) {
       const toks = tokensOf(item);
       if (toks.length >= 2) {
-        parts.push(`(${toks.map((t) => `contains(meno_norm, '${t.replace(/'/g, "''")}')`).join(' AND ')})`);
+        const pConds = toks.filter((t) => t.length >= 2).map((t) => prefixPred('meno_norm', t.replace(/'/g, "''")));
+        const pClause = pConds.length === 1 ? pConds[0] : `(${pConds.join(' OR ')})`;
+        const cClause = toks.map((t) => `contains(meno_norm, '${t.replace(/'/g, "''")}')`).join(' AND ');
+        parts.push(`(${pClause} AND ${cClause})`);
       }
     }
   }
@@ -749,9 +757,7 @@ async function placeSearch(q) {
 }
 
 function nameWhisperPred(q) {
-  const toks = tokensOf(q);
-  if (!toks.length || toks[0].length < 2) return '';
-  return toks.map((t) => `contains(meno_norm, '${t.replace(/'/g, "''")}')`).join(' AND ');
+  return tokenPred('meno_norm', q);
 }
 
 async function nameSearch(q) {
