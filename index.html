@@ -545,8 +545,8 @@
           </div>
         </div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
-          <input type="text" class="search-input" id="swaps-ku-input" placeholder="Katastrálne územie (napr. Stráňany)..." style="width:220px">
-          <input type="text" class="search-input" id="swaps-name-input" placeholder="Meno (voliteľné)..." style="width:180px">
+          <input type="text" class="search-input" id="swaps-ku-input" placeholder="Katastrálne územie (napr. Stráňany)..." style="width:220px" onkeydown="if(event.key==='Enter') runSwapAnalysisUI()">
+          <input type="text" class="search-input" id="swaps-name-input" placeholder="Meno (voliteľné)..." style="width:180px" onkeydown="if(event.key==='Enter') runSwapAnalysisUI()">
           <button class="btn" onclick="runSwapAnalysisUI()">⚡ Analyzovať zámeny</button>
           <button class="bulk-lv-btn" onclick="openImportModal()">📂 Nahrať výpis (HTML)</button>
         </div>

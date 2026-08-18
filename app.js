@@ -3376,10 +3376,10 @@ async function loadSwapAnalysis(ku, name) {
   }
 }
 window.loadSwapAnalysis = loadSwapAnalysis;
-window.runSwapAnalysisUI = () => {
-  const ku = document.getElementById('swaps-ku-input')?.value;
-  const name = document.getElementById('swaps-name-input')?.value;
-  loadSwapAnalysis(ku, name);
+window.runSwapAnalysisUI = (ku, name) => {
+  const kuVal = (ku !== undefined && typeof ku === 'string') ? ku : document.getElementById('swaps-ku-input')?.value;
+  const nameVal = (name !== undefined && typeof name === 'string') ? name : document.getElementById('swaps-name-input')?.value;
+  loadSwapAnalysis(kuVal, nameVal);
 };
 window.openSwapAnalysis = (ku, name) => {
   showTab('swaps');

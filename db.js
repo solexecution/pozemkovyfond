@@ -1329,6 +1329,17 @@ async function lvAnalysis(q) {
     ORDER BY shared_lvs_count DESC, o2.meno_vlastnika
     LIMIT 25
   `);
+  return {
+    searchName,
+    storedLvCount: lvBreakdown.length,
+    totalOwnedM2,
+    totalOwnedHa: (totalOwnedM2 / 10000).toFixed(4),
+    lvBreakdown,
+    landTypeBreakdown,
+    coOwners,
+  };
+}
+
 async function swapAnalysis(q) {
   const kuQuery = (q.ku || '').trim();
   const nameQuery = (q.name || '').trim();
