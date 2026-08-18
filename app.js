@@ -2904,7 +2904,7 @@ window.openAllLvs = openAllLvs;
 async function enrichAndAnalyzeLvs(lvs) {
   const searchBox = (document.getElementById('owner-search')?.value || '').trim();
   const colNameFilter = (ownerState.colFilters.name || '').trim();
-  const currentSearchName = searchBox || colNameFilter || 'horvath';
+  const currentSearchName = searchBox || colNameFilter || '';
   
   // 1. Immediately switch to Analýza LV tab so the user sees action right away!
   showTab('lv-analysis');
@@ -2928,18 +2928,20 @@ async function enrichAndAnalyzeLvs(lvs) {
 
   showToast(`⏳ Sťahujem ${lvs.length} LV z Katastra...`, 'info');
 
+  // Fetch LVs concurrently in batches of 4 (avoids flooding the proxy while still being fast)
+  const BATCH = 4;
   const items = [];
-  for (let i = 0; i < lvs.length; i++) {
-    const item = lvs[i];
+
+  async function fetchOneLv(item) {
     try {
-      // Try local proxy endpoint first
+      // Try local proxy endpoint first (uses Playwright behind the scenes)
       let resp = await apiFetch(`/lv-preview?lv=${item.lv}&ku=${item.ku}`);
       let html = await resp.text();
-      
+
       let doc = new DOMParser().parseFromString(html, 'text/html');
       let text = doc.body.innerText || doc.body.textContent || '';
 
-      // If local proxy returned reCAPTCHA script, try direct Kataster API URL
+      // If local proxy returned reCAPTCHA page, try direct Kataster URL as fallback
       if (!text.includes('LIST U VLASTNÍCTVA') && !text.includes('MAJETKOVÁ PODSTATA')) {
         try {
           const directUrl = `https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${item.lv}&cadastralUnitCode=${item.ku}&outputType=html`;
@@ -2951,11 +2953,20 @@ async function enrichAndAnalyzeLvs(lvs) {
       }
 
       if (text && text.length > 200 && (text.includes('MAJETKOVÁ PODSTATA') || text.includes('VLASTNÍCI') || text.includes('LIST U VLASTNÍCTVA') || text.includes('Parcely'))) {
-        items.push({ lv: item.lv, ku: item.ku, kuName: item.kuName, text });
+        return { lv: item.lv, ku: item.ku, kuName: item.kuName, text };
       }
     } catch (e) {
       console.warn(`Failed to fetch LV ${item.lv}:`, e);
     }
+    return null;
+  }
+
+  for (let i = 0; i < lvs.length; i += BATCH) {
+    const batch = lvs.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(fetchOneLv));
+    results.forEach(r => r && items.push(r));
+    // Brief yield between batches so the browser stays responsive
+    await new Promise(r => setTimeout(r, 100));
   }
 
   if (items.length > 0) {
@@ -4528,9 +4539,7 @@ function filterMapByOkres(okresName) {
 }
 window.filterMapByOkres = filterMapByOkres;
 
-function normStr(s) {
-  return fold(s).trim();
-}
+
 
 let _mapSearchIdx = -1; // keyboard nav index
 
@@ -4538,7 +4547,7 @@ function onMapSearchInput(query) {
   const dd = document.getElementById('map-search-dropdown');
   if (!dd) return;
 
-  const q = normStr(query);
+  const q = fold(query);
   if (!q || !window._geoBoundariesData) {
     dd.style.display = 'none';
     _mapSearchIdx = -1;
@@ -4550,14 +4559,14 @@ function onMapSearchInput(query) {
   const results = window._geoBoundariesData.features
     .filter(f => {
       if (filterSet && !filterSet.has(foldKuKey(f.properties.name))) return false;
-      const name = normStr(f.properties.name);
-      const district = normStr(f.properties.district || '');
+      const name = fold(f.properties.name);
+      const district = fold(f.properties.district || '');
       return name.includes(q) || district.includes(q);
     })
     .sort((a, b) => {
       // Exact prefix match first, then by count desc
-      const an = normStr(a.properties.name);
-      const bn = normStr(b.properties.name);
+      const an = fold(a.properties.name);
+      const bn = fold(b.properties.name);
       const aExact = an.startsWith(q) ? 0 : 1;
       const bExact = bn.startsWith(q) ? 0 : 1;
       if (aExact !== bExact) return aExact - bExact;

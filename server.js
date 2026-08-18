@@ -8,7 +8,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import * as cheerio from 'cheerio';
+
 import { parseLvText } from './lv_parser.js';
 import { isLvVypisHtml } from './lv-html.js';
 import cors from 'cors';
@@ -53,7 +53,8 @@ async function fetchKatasterLvHtml(lv, ku) {
   try {
     const targetUrl = `https://kataster.skgeodesy.sk/Portal45/api/Bo/GeneratePrfPublic?prfNumber=${lv}&cadastralUnitCode=${ku}&outputType=html`;
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await page.waitForTimeout(1500);
+    // Wait for actual LV content or reCAPTCHA — avoids a fixed 1.5 s delay on fast loads
+    await page.waitForSelector('table, .g-recaptcha', { timeout: 8000 }).catch(() => {});
 
     const html = await page.content();
     const text = await page.evaluate(() => document.body.innerText || '');
@@ -122,32 +123,8 @@ async function initDb() {
   `);
 }
 
-/** Run a query and return all rows as arrays */
-async function query(sql, ...params) {
-  // Build prepared statement if params provided
-  let result;
-  if (params.length > 0) {
-    const stmt = await conn.prepare(sql);
-    for (let i = 0; i < params.length; i++) {
-      const p = params[i];
-      if (typeof p === 'string') stmt.bindVarchar(i + 1, p);
-      else if (typeof p === 'number') stmt.bindInteger(i + 1, p);
-      else if (typeof p === 'bigint') stmt.bindBigInt(i + 1, p);
-    }
-    result = await stmt.run();
-  } else {
-    result = await conn.run(sql);
-  }
 
-  const rows = [];
-  for (let i = 0; i < result.chunkCount; i++) {
-    const chunk = result.getChunk(i);
-    rows.push(...chunk.getRows());
-  }
-  return rows;
-}
 
-/** Run a query and return rows as objects using column names */
 async function queryObjects(sql) {
   const result = await conn.run(sql);
   const colNames = result.columnNames();
@@ -264,21 +241,7 @@ app.get('/api/geo-stats', async (req, res) => {
   }
 });
 
-/** GET /api/debug-ku — Search DuckDB katastralne_uzemie names */
-app.get('/api/debug-ku', async (req, res) => {
-  try {
-    const q = req.query.q || '';
-    const rows = await queryObjects(`
-      SELECT katastralne_uzemie, strip_accents(LOWER(katastralne_uzemie)) as ku_norm, COUNT(*) as cnt
-      FROM unknown_owners
-      WHERE strip_accents(LOWER(katastralne_uzemie)) LIKE '%${q.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')}%'
-      GROUP BY katastralne_uzemie, strip_accents(LOWER(katastralne_uzemie)) ORDER BY cnt DESC LIMIT 50
-    `);
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+
 
 /** GET /api/geo-boundaries — Returns official Slovakia municipality & district GeoJSON with DuckDB counts */
 let cachedGeoJson = null;
@@ -612,29 +575,7 @@ app.get('/api/correlations', async (req, res) => {
   }
 });
 
-/** GET /api/owner-detail?name= — find an owner across both datasets */
-app.get('/api/owner-detail', async (req, res) => {
-  try {
-    const name = (req.query.name || '').trim();
-    if (!name) return res.json({ unknownOwner: [], transferred: [] });
 
-    const unknownOwner = await queryObjects(`
-      SELECT * FROM unknown_owners
-      WHERE meno_vlastnika ILIKE '%${name.replace(/'/g,"''")}%'
-      LIMIT 100
-    `);
-
-    const transferred = await queryObjects(`
-      SELECT * FROM transferred_rights
-      WHERE vlastnik_lv ILIKE '%${name.replace(/'/g,"''")}%'
-      LIMIT 100
-    `);
-
-    res.json({ unknownOwner, transferred });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 /** GET /api/custom-query — run a custom SQL query (SELECT only) */
 app.post('/api/custom-query', async (req, res) => {
@@ -708,68 +649,7 @@ app.post('/api/save-lv-data', async (req, res) => {
   }
 });
 
-/** POST /api/enrich-lvs — Fetch, parse, and store LV details into DuckDB using Playwright Headless Chrome */
-app.post('/api/enrich-lvs', async (req, res) => {
-  try {
-    const { lvs } = req.body;
-    if (!Array.isArray(lvs) || !lvs.length) {
-      return res.status(400).json({ error: 'Array of {lv, ku} required' });
-    }
 
-    let enrichedCount = 0;
-    let cachedCount = 0;
-
-    for (const item of lvs) {
-      const lv = parseInt(item.lv, 10);
-      const ku = parseInt(item.ku, 10);
-      if (!lv || !ku) continue;
-
-      // Check if already in DuckDB
-      const existing = await queryObjects(`SELECT count(*) as cnt FROM lv_details WHERE lv = ${lv} AND cislo_ku = ${ku} AND celkova_vymera_m2 > 0`);
-      if (existing[0]?.cnt > 0) {
-        cachedCount++;
-        continue;
-      }
-
-      // Fetch via Playwright Headless Chrome
-      const { text } = await fetchKatasterLvHtml(lv, ku);
-      if (!text || text.length < 200) continue;
-
-      const parsed = parseLvText(text, lv, ku);
-      const doc = parsed.doc;
-
-      // Insert into lv_details
-      await queryObjects(`
-        INSERT OR REPLACE INTO lv_details (lv, cislo_ku, nazov_ku, okres, obec, pocet_parciel_c, pocet_parciel_e, celkova_vymera_m2, pocet_vlastnikov, fetched_at)
-        VALUES (${doc.lv}, ${doc.cislo_ku}, '${(doc.nazov_ku || item.kuName || '').replace(/'/g,"''")}', '${(doc.okres || '').replace(/'/g,"''")}', '${(doc.obec || '').replace(/'/g,"''")}', ${doc.pocet_parciel_c}, ${doc.pocet_parciel_e}, ${doc.celkova_vymera_m2}, ${doc.pocet_vlastnikov}, CURRENT_TIMESTAMP)
-      `);
-
-      // Insert parcels
-      for (const p of parsed.parcels) {
-        const pId = `${doc.cislo_ku}_${doc.lv}_${p.register_type}_${p.parcel_no}`.replace(/[\/\s]/g, '_');
-        await queryObjects(`
-          INSERT OR REPLACE INTO lv_parcels (id, lv, cislo_ku, register_type, parcel_no, vymera_m2, druh_pozemku)
-          VALUES ('${pId.replace(/'/g,"''")}', ${doc.lv}, ${doc.cislo_ku}, '${p.register_type}', '${p.parcel_no.replace(/'/g,"''")}', ${p.vymera_m2}, '${(p.druh_pozemku || '').replace(/'/g,"''")}')
-        `);
-      }
-
-      // Insert owners
-      for (const o of parsed.owners) {
-        const oId = `${doc.cislo_ku}_${doc.lv}_${o.poradove_cislo}`;
-        await queryObjects(`
-          INSERT OR REPLACE INTO lv_owners (id, lv, cislo_ku, poradove_cislo, meno_vlastnika, datum_narodenia, podiel_str, podiel_num, podiel_den, podiel_decimal, titul_nadobudnutia)
-          VALUES ('${oId}', ${doc.lv}, ${doc.cislo_ku}, ${o.poradove_cislo}, '${o.meno_vlastnika.replace(/'/g,"''")}', '${o.datum_narodenia.replace(/'/g,"''")}', '${o.podiel_str}', ${o.podiel_num}, ${o.podiel_den}, ${o.podiel_decimal}, '${(o.titul_nadobudnutia || '').replace(/'/g,"''")}')
-        `);
-      }
-
-      enrichedCount++;
-    }
-
-    res.json({ success: true, enrichedCount, cachedCount, total: lvs.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 function buildTokenWhere(col, searchName) {
   const tokens = normStr(searchName).split(/\s+/).filter(Boolean);
@@ -811,7 +691,7 @@ app.get('/api/all-unique-lvs', async (req, res) => {
 /** GET /api/lv-analysis — Run correlation & m2 ownership analysis across stored LVs */
 app.get('/api/lv-analysis', async (req, res) => {
   try {
-    const searchName = (req.query.name || 'horvath').trim();
+    const searchName = (req.query.name || '').trim();
 
     // Total stored LVs matching search name (multi-token accent insensitive)
     const lvBreakdown = await queryObjects(`
